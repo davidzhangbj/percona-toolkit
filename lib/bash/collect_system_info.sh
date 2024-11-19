@@ -137,6 +137,9 @@ collect_system_data () { local PTFUNCNAME=collect_system_data;
    # Fusion-io cards
    fio_status_minus_a "$data_dir/fusion-io_card"
 
+   # THP
+   cat /sys/kernel/mm/transparent_hugepage/enabled >"$data_dir/transparent_hugepage" 2>/dev/null
+
    # Clean the data directory, don't leave empty files
    for file in $data_dir/*; do
       # The vmstat file gets special treatmeant, see above.

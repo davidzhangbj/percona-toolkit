@@ -1581,7 +1581,7 @@ sub get_cxn_params {
       $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
          . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
                      grep { defined $info->{$_} }
-                     qw(F h P S A))
+                     qw(F h P S A s))
          . ';mysql_read_default_group=client'
          . ($info->{L} ? ';mysql_local_infile=1' : '');
    }
@@ -4052,29 +4052,29 @@ sub autodetect_nodes {
       seen_ids => $seen_ids
    );
 
-   my $new_slaves = [];
+   my $new_replicas = [];
    foreach my $node (@$new_nodes) {
-      my $node_slaves = $ms->get_slaves(
+      my $node_replicas = $ms->get_replicas(
          dbh      => $node->dbh(),
          dsn      => $node->dsn(),
          make_cxn => $make_cxn,
       );
-      push @$new_slaves, @$node_slaves;
+      push @$new_replicas, @$node_replicas;
    }
 
-   $new_slaves = $self->remove_duplicate_cxns(
-      cxns     => $new_slaves,
+   $new_replicas = $self->remove_duplicate_cxns(
+      cxns     => $new_replicas,
       seen_ids => $seen_ids
    );
 
-   my @new_slave_nodes = grep { $self->is_cluster_node($_) } @$new_slaves;
+   my @new_replica_nodes = grep { $self->is_cluster_node($_) } @$new_replicas;
 
-   my $slaves_of_slaves = $self->autodetect_nodes(
+   my $replicas_of_replicas = $self->autodetect_nodes(
          %args,
-         nodes => \@new_slave_nodes,
+         nodes => \@new_replica_nodes,
    );
 
-   my @autodetected_nodes = ( @$new_nodes, @$new_slaves, @$slaves_of_slaves );
+   my @autodetected_nodes = ( @$new_nodes, @$new_replicas, @$replicas_of_replicas );
    return \@autodetected_nodes;
 }
 
@@ -4777,7 +4777,7 @@ sub get_keys {
          ddl          => $key_ddl,
       };
 
-      if ( ($engine || '') =~ m/InnoDB/i && !$clustered_key ) {
+      if ( ($engine || '') =~ m/(InnoDB)|(TokuDB)|(RocksDB)/i && !$clustered_key ) {
          my $this_key = $keys->{$name};
          if ( $this_key->{name} eq 'PRIMARY' ) {
             $clustered_key = 'PRIMARY';
@@ -5202,7 +5202,7 @@ sub new {
    return bless $self, $class;
 }
 
-sub get_slaves {
+sub get_replicas {
    my ($self, %args) = @_;
    my @required_args = qw(make_cxn);
    foreach my $arg ( @required_args ) {
@@ -5210,11 +5210,11 @@ sub get_slaves {
    }
    my ($make_cxn) = @args{@required_args};
 
-   my $slaves  = [];
+   my $replicas  = [];
    my $dp      = $self->{DSNParser};
    my $methods = $self->_resolve_recursion_methods($args{dsn});
 
-   return $slaves unless @$methods;
+   return $replicas unless @$methods;
 
    if ( grep { m/processlist|hosts/i } @$methods ) {
       my @required_args = qw(dbh dsn);
@@ -5224,26 +5224,26 @@ sub get_slaves {
       my ($dbh, $dsn) = @args{@required_args};
       my $o = $self->{OptionParser};
 
-      $self->recurse_to_slaves(
-         {  dbh            => $dbh,
-            dsn            => $dsn,
-            slave_user     => $o->got('slave-user') ? $o->get('slave-user') : '',
-            slave_password => $o->got('slave-password') ? $o->get('slave-password') : '',
-            slaves         => $args{slaves},
+      $self->recurse_to_replicas(
+         {  dbh              => $dbh,
+            dsn              => $dsn,
+            replica_user     => ( $o->got('replica-user') or $o->got('slave-user') ) ? $o->get('replica-user') : '',
+            replica_password => ( $o->got('replica-password') or $o->got('slave-password') ) ? $o->get('replica-password') : '',
+            replicas         => $args{replicas},
             callback  => sub {
                my ( $dsn, $dbh, $level, $parent ) = @_;
                return unless $level;
-               PTDEBUG && _d('Found slave:', $dp->as_string($dsn));
-               my $slave_dsn = $dsn;
-               if ($o->got('slave-user')) {
-                  $slave_dsn->{u} = $o->get('slave-user');
-                  PTDEBUG && _d("Using slave user ".$o->get('slave-user')." on ".$slave_dsn->{h}.":".$slave_dsn->{P});
+               PTDEBUG && _d('Found replica:', $dp->as_string($dsn));
+               my $replica_dsn = $dsn;
+               if ( $o->got('replica-user') or $o->got('slave-user') ) {
+                  $replica_dsn->{u} = $o->get('replica-user');
+                  PTDEBUG && _d("Using replica user ".$o->get('replica-user')." on ".$replica_dsn->{h}.":".$replica_dsn->{P});
                }
-               if ($o->got('slave-password')) {
-                  $slave_dsn->{p} = $o->get('slave-password');
-                  PTDEBUG && _d("Slave password set");
+               if ( $o->got('replica-password') or $o->got('slave-password') ) {
+                  $replica_dsn->{p} = $o->get('replica-password');
+                  PTDEBUG && _d("Replica password set");
                }
-               push @$slaves, $make_cxn->(dsn => $slave_dsn, dbh => $dbh, parent => $parent);
+               push @$replicas, $make_cxn->(dsn => $replica_dsn, dbh => $dbh, parent => $parent);
                return;
             },
             wait_no_die => $args{'wait_no_die'},
@@ -5251,20 +5251,20 @@ sub get_slaves {
       );
    } elsif ( $methods->[0] =~ m/^dsn=/i ) {
       (my $dsn_table_dsn = join ",", @$methods) =~ s/^dsn=//i;
-      $slaves = $self->get_cxn_from_dsn_table(
+      $replicas = $self->get_cxn_from_dsn_table(
          %args,
          dsn_table_dsn => $dsn_table_dsn,
          wait_no_die => $args{'wait_no_die'},
       );
    }
    elsif ( $methods->[0] =~ m/none/i ) {
-      PTDEBUG && _d('Not getting to slaves');
+      PTDEBUG && _d('Not getting to replicas');
    }
    else {
       die "Unexpected recursion methods: @$methods";
    }
 
-   return $slaves;
+   return $replicas;
 }
 
 sub _resolve_recursion_methods {
@@ -5282,31 +5282,31 @@ sub _resolve_recursion_methods {
    }
 }
 
-sub recurse_to_slaves {
+sub recurse_to_replicas {
    my ( $self, $args, $level ) = @_;
    $level ||= 0;
    my $dp = $self->{DSNParser};
    my $recurse = $args->{recurse} || $self->{OptionParser}->get('recurse');
    my $dsn = $args->{dsn};
-   my $slave_user = $args->{slave_user} || '';
-   my $slave_password = $args->{slave_password} || '';
+   my $replica_user = $args->{replica_user} || '';
+   my $replica_password = $args->{replica_password} || '';
 
    my $methods = $self->_resolve_recursion_methods($dsn);
    PTDEBUG && _d('Recursion methods:', @$methods);
    if ( lc($methods->[0]) eq 'none' ) {
-      PTDEBUG && _d('Not recursing to slaves');
+      PTDEBUG && _d('Not recursing to replicas');
       return;
    }
 
-   my $slave_dsn = $dsn;
-   if ($slave_user) {
-      $slave_dsn->{u} = $slave_user;
-      PTDEBUG && _d("Using slave user $slave_user on "
-         . $slave_dsn->{h} . ":" . ( $slave_dsn->{P} ? $slave_dsn->{P} : ""));
+   my $replica_dsn = $dsn;
+   if ($replica_user) {
+      $replica_dsn->{u} = $replica_user;
+      PTDEBUG && _d("Using replica user $replica_user on "
+         . $replica_dsn->{h} . ":" . ( $replica_dsn->{P} ? $replica_dsn->{P} : ""));
    }
-   if ($slave_password) {
-      $slave_dsn->{p} = $slave_password;
-      PTDEBUG && _d("Slave password set");
+   if ($replica_password) {
+      $replica_dsn->{p} = $replica_password;
+      PTDEBUG && _d("Replica password set");
    }
 
    my $dbh = $args->{dbh};
@@ -5314,12 +5314,12 @@ sub recurse_to_slaves {
    my $get_dbh = sub {
          eval {
             $dbh = $dp->get_dbh(
-               $dp->get_cxn_params($slave_dsn), { AutoCommit => 1 }
+               $dp->get_cxn_params($replica_dsn), { AutoCommit => 1 }
             );
-            PTDEBUG && _d('Connected to', $dp->as_string($slave_dsn));
+            PTDEBUG && _d('Connected to', $dp->as_string($replica_dsn));
          };
          if ( $EVAL_ERROR ) {
-            print STDERR "Cannot connect to ", $dp->as_string($slave_dsn), ": ", $EVAL_ERROR, "\n"
+            print STDERR "Cannot connect to ", $dp->as_string($replica_dsn), ": ", $EVAL_ERROR, "\n"
                or die "Cannot print: $OS_ERROR";
             return;
          }
@@ -5327,10 +5327,10 @@ sub recurse_to_slaves {
 
    DBH: {
       if ( !defined $dbh ) {
-         foreach my $known_slave ( @{$args->{slaves}} ) {
-            if ($known_slave->{dsn}->{h} eq $slave_dsn->{h} and
-                $known_slave->{dsn}->{P} eq $slave_dsn->{P} ) {
-               $dbh = $known_slave->{dbh};
+         foreach my $known_replica ( @{$args->{replicas}} ) {
+            if ($known_replica->{dsn}->{h} eq $replica_dsn->{h} and
+                $known_replica->{dsn}->{P} eq $replica_dsn->{P} ) {
+               $dbh = $known_replica->{dbh};
                last DBH;
             }
          }
@@ -5348,7 +5348,7 @@ sub recurse_to_slaves {
 	   if ( $EVAL_ERROR ) {
 		   if ( $args->{wait_no_die} ) {
 			   print STDERR "Error getting server id: ", $EVAL_ERROR,
-               "\nRetrying query for server ", $slave_dsn->{h}, ":", $slave_dsn->{P}, "\n";
+               "\nRetrying query for server ", $replica_dsn->{h}, ":", $replica_dsn->{P}, "\n";
             sleep 1;
             $dbh->disconnect();
             $get_dbh->();
@@ -5358,12 +5358,12 @@ sub recurse_to_slaves {
       }
    } until (defined $id);
    PTDEBUG && _d('Working on server ID', $id);
-   my $master_thinks_i_am = $dsn->{server_id};
+   my $source_thinks_i_am = $dsn->{server_id};
    if ( !defined $id
-       || ( defined $master_thinks_i_am && $master_thinks_i_am != $id )
+       || ( defined $source_thinks_i_am && $source_thinks_i_am != $id )
        || $args->{server_ids_seen}->{$id}++
    ) {
-      PTDEBUG && _d('Server ID seen, or not what master said');
+      PTDEBUG && _d('Server ID seen, or not what source said');
       if ( $args->{skip_callback} ) {
          $args->{skip_callback}->($dsn, $dbh, $level, $args->{parent});
       }
@@ -5374,51 +5374,51 @@ sub recurse_to_slaves {
 
    if ( !defined $recurse || $level < $recurse ) {
 
-      my @slaves =
-         grep { !$_->{master_id} || $_->{master_id} == $id } # Only my slaves.
-         $self->find_slave_hosts($dp, $dbh, $dsn, $methods);
+      my @replicas =
+         grep { !$_->{source_id} || $_->{source_id} == $id } # Only my replicas.
+         $self->find_replica_hosts($dp, $dbh, $dsn, $methods);
 
-      foreach my $slave ( @slaves ) {
+      foreach my $replica ( @replicas ) {
          PTDEBUG && _d('Recursing from',
-            $dp->as_string($dsn), 'to', $dp->as_string($slave));
-         $self->recurse_to_slaves(
-            { %$args, dsn => $slave, dbh => undef, parent => $dsn, slave_user => $slave_user, $slave_password => $slave_password }, $level + 1 );
+            $dp->as_string($dsn), 'to', $dp->as_string($replica));
+         $self->recurse_to_replicas(
+            { %$args, dsn => $replica, dbh => undef, parent => $dsn, replica_user => $replica_user, $replica_password => $replica_password }, $level + 1 );
       }
    }
 }
 
-sub find_slave_hosts {
+sub find_replica_hosts {
    my ( $self, $dsn_parser, $dbh, $dsn, $methods ) = @_;
 
-   PTDEBUG && _d('Looking for slaves on', $dsn_parser->as_string($dsn),
+   PTDEBUG && _d('Looking for replicas on', $dsn_parser->as_string($dsn),
       'using methods', @$methods);
 
-   my @slaves;
+   my @replicas;
    METHOD:
    foreach my $method ( @$methods ) {
-      my $find_slaves = "_find_slaves_by_$method";
-      PTDEBUG && _d('Finding slaves with', $find_slaves);
-      @slaves = $self->$find_slaves($dsn_parser, $dbh, $dsn);
-      last METHOD if @slaves;
+      my $find_replicas = "_find_replicas_by_$method";
+      PTDEBUG && _d('Finding replicas with', $find_replicas);
+      @replicas = $self->$find_replicas($dsn_parser, $dbh, $dsn);
+      last METHOD if @replicas;
    }
 
-   PTDEBUG && _d('Found', scalar(@slaves), 'slaves');
-   return @slaves;
+   PTDEBUG && _d('Found', scalar(@replicas), 'replicas');
+   return @replicas;
 }
 
-sub _find_slaves_by_processlist {
+sub _find_replicas_by_processlist {
    my ( $self, $dsn_parser, $dbh, $dsn ) = @_;
-   my @connected_slaves = $self->get_connected_slaves($dbh);
-   my @slaves = $self->_process_slaves_list($dsn_parser, $dsn, \@connected_slaves);
-   return @slaves;
+   my @connected_replicas = $self->get_connected_replicas($dbh);
+   my @replicas = $self->_process_replicas_list($dsn_parser, $dsn, \@connected_replicas);
+   return @replicas;
 }
 
-sub _process_slaves_list {
-   my ($self, $dsn_parser, $dsn, $connected_slaves) = @_;
-   my @slaves = map  {
-      my $slave        = $dsn_parser->parse("h=$_", $dsn);
-      $slave->{source} = 'processlist';
-      $slave;
+sub _process_replicas_list {
+   my ($self, $dsn_parser, $dsn, $connected_replicas) = @_;
+   my @replicas = map  {
+      my $replica        = $dsn_parser->parse("h=$_", $dsn);
+      $replica->{source} = 'processlist';
+      $replica;
    }
    grep { $_ }
    map  {
@@ -5430,22 +5430,30 @@ sub _process_slaves_list {
           $host = '['.$host.']';
       }
       $host;
-   } @$connected_slaves;
+   } @$connected_replicas;
 
-   return @slaves;
+   return @replicas;
 }
 
-sub _find_slaves_by_hosts {
+sub _find_replicas_by_hosts {
    my ( $self, $dsn_parser, $dbh, $dsn ) = @_;
 
-   my @slaves;
-   my $sql = 'SHOW SLAVE HOSTS';
-   PTDEBUG && _d($dbh, $sql);
-   @slaves = @{$dbh->selectall_arrayref($sql, { Slice => {} })};
+   my @replicas;
 
-   if ( @slaves ) {
-      PTDEBUG && _d('Found some SHOW SLAVE HOSTS info');
-      @slaves = map {
+   my $vp = VersionParser->new($dbh);
+   my $sql = 'SHOW REPLICAS';
+   my $source_name = 'source';
+   if ( $vp lt '8.1' || $vp->flavor() =~ m/maria/ ) {
+      $sql = 'SHOW SLAVE HOSTS';
+      $source_name='master';
+   }
+   
+   PTDEBUG && _d($dbh, $sql);
+   @replicas = @{$dbh->selectall_arrayref($sql, { Slice => {} })};
+
+   if ( @replicas ) {
+      PTDEBUG && _d('Found some SHOW REPLICAS info');
+      @replicas = map {
          my %hash;
          @hash{ map { lc $_ } keys %$_ } = values %$_;
          my $spec = "h=$hash{host},P=$hash{port}"
@@ -5453,16 +5461,16 @@ sub _find_slaves_by_hosts {
             . ( $hash{password} ? ",p=$hash{password}" : '');
          my $dsn           = $dsn_parser->parse($spec, $dsn);
          $dsn->{server_id} = $hash{server_id};
-         $dsn->{master_id} = $hash{master_id};
+         $dsn->{source_id} = $hash{"${source_name}_id"};
          $dsn->{source}    = 'hosts';
          $dsn;
-      } @slaves;
+      } @replicas;
    }
 
-   return @slaves;
+   return @replicas;
 }
 
-sub get_connected_slaves {
+sub get_connected_replicas {
    my ( $self, $dbh ) = @_;
 
    my $show = "SHOW GRANTS FOR ";
@@ -5508,79 +5516,96 @@ sub get_connected_slaves {
    @{$dbh->selectall_arrayref($sql, { Slice => {} })};
 }
 
-sub is_master_of {
-   my ( $self, $master, $slave ) = @_;
-   my $master_status = $self->get_master_status($master)
-      or die "The server specified as a master is not a master";
-   my $slave_status  = $self->get_slave_status($slave)
-      or die "The server specified as a slave is not a slave";
-   my @connected     = $self->get_connected_slaves($master)
-      or die "The server specified as a master has no connected slaves";
-   my (undef, $port) = $master->selectrow_array("SHOW VARIABLES LIKE 'port'");
+sub is_source_of {
+   my ( $self, $source, $replica ) = @_;
 
-   if ( $port != $slave_status->{master_port} ) {
-      die "The slave is connected to $slave_status->{master_port} "
-         . "but the master's port is $port";
+   my $source_name = get_source_name($replica);
+   my $source_port = "${source_name}_port";
+
+   my $source_status = $self->get_source_status($source)
+      or die "The server specified as a source is not a source";
+   my $replica_status  = $self->get_replica_status($replica)
+      or die "The server specified as a replica is not a replica";
+   my @connected     = $self->get_connected_replicas($source)
+      or die "The server specified as a source has no connected replicas";
+   my (undef, $port) = $source->selectrow_array("SHOW VARIABLES LIKE 'port'");
+
+   if ( $port != $replica_status->{$source_port} ) {
+      die "The replica is connected to $replica_status->{$source_port} "
+         . "but the source's port is $port";
    }
 
-   if ( !grep { $slave_status->{master_user} eq $_->{user} } @connected ) {
-      die "I don't see any slave I/O thread connected with user "
-         . $slave_status->{master_user};
+   if ( !grep { $replica_status->{"${source_name}_user"} eq $_->{user} } @connected ) {
+      die "I don't see any replica I/O thread connected with user "
+         . $replica_status->{"${source_name}_user"};
    }
 
-   if ( ($slave_status->{slave_io_state} || '')
-      eq 'Waiting for master to send event' )
+   if ( ( ($replica_status->{replica_io_state} || '')
+         eq 'Waiting for source to send event' )
+      || ( ($replica_status->{replica_io_state} || '')
+         eq 'Waiting for master to send event' ) )
    {
-      my ( $master_log_name, $master_log_num )
-         = $master_status->{file} =~ m/^(.*?)\.0*([1-9][0-9]*)$/;
-      my ( $slave_log_name, $slave_log_num )
-         = $slave_status->{master_log_file} =~ m/^(.*?)\.0*([1-9][0-9]*)$/;
-      if ( $master_log_name ne $slave_log_name
-         || abs($master_log_num - $slave_log_num) > 1 )
+      my ( $source_log_name, $source_log_num )
+         = $source_status->{file} =~ m/^(.*?)\.0*([1-9][0-9]*)$/;
+      my ( $replica_log_name, $replica_log_num )
+         = $replica_status->{source_log_file} =~ m/^(.*?)\.0*([1-9][0-9]*)$/;
+      if ( $source_log_name ne $replica_log_name
+         || abs($source_log_num - $replica_log_num) > 1 )
       {
-         die "The slave thinks it is reading from "
-            . "$slave_status->{master_log_file},  but the "
-            . "master is writing to $master_status->{file}";
+         die "The replica thinks it is reading from "
+            . "$replica_status->{source_log_file},  but the "
+            . "source is writing to $source_status->{file}";
       }
    }
    return 1;
 }
 
-sub get_master_dsn {
+sub get_source_dsn {
    my ( $self, $dbh, $dsn, $dsn_parser ) = @_;
-   my $master = $self->get_slave_status($dbh) or return undef;
-   my $spec   = "h=$master->{master_host},P=$master->{master_port}";
+
+   my $vp = VersionParser->new($dbh);
+   my $source_host = 'source_host';
+   my $source_port = 'source_port';
+   if ( $vp lt '8.1' || $vp->flavor() =~ m/maria/ ) {
+      $source_host = 'master_host';
+      $source_port = 'master_port';
+   }
+
+   my $source = $self->get_replica_status($dbh) or return undef;
+   my $spec   = "h=$source->{${source_host}},P=$source->{${source_port}}";
    return       $dsn_parser->parse($spec, $dsn);
 }
 
-sub get_slave_status {
+sub get_replica_status {
    my ( $self, $dbh ) = @_;
 
-   if ( !$self->{not_a_slave}->{$dbh} ) {
-      my $sth = $self->{sths}->{$dbh}->{SLAVE_STATUS}
-            ||= $dbh->prepare('SHOW SLAVE STATUS');
-      PTDEBUG && _d($dbh, 'SHOW SLAVE STATUS');
+   my $replica_name = get_replica_name($dbh);
+
+   if ( !$self->{not_a_replica}->{$dbh} ) {
+      my $sth = $self->{sths}->{$dbh}->{REPLICA_STATUS}
+            ||= $dbh->prepare("SHOW ${replica_name} STATUS");
+      PTDEBUG && _d($dbh, "SHOW ${replica_name} STATUS");
       $sth->execute();
-      my ($sss_rows) = $sth->fetchall_arrayref({}); # Show Slave Status rows
+      my ($sss_rows) = $sth->fetchall_arrayref({}); # Show Replica Status rows
 
       my $ss;
       if ( $sss_rows && @$sss_rows ) {
           if (scalar @$sss_rows > 1) {
               if (!$self->{channel}) {
-                  die 'This server returned more than one row for SHOW SLAVE STATUS but "channel" was not specified on the command line';
+                  die 'This server returned more than one row for SHOW REPLICA STATUS but "channel" was not specified on the command line';
               }
-              my $slave_use_channels;
+              my $replica_use_channels;
               for my $row (@$sss_rows) {
                   $row = { map { lc($_) => $row->{$_} } keys %$row }; # lowercase the keys
                   if ($row->{channel_name}) {
-                      $slave_use_channels = 1;
+                      $replica_use_channels = 1;
                   }
                   if ($row->{channel_name} eq $self->{channel}) {
                       $ss = $row;
                       last;
                   }
               }
-              if (!$ss && $slave_use_channels) {
+              if (!$ss && $replica_use_channels) {
                  die 'This server is using replication channels but "channel" was not specified on the command line';
               }
           } else {
@@ -5600,28 +5625,34 @@ sub get_slave_status {
           }
       }
 
-      PTDEBUG && _d('This server returns nothing for SHOW SLAVE STATUS');
-      $self->{not_a_slave}->{$dbh}++;
+      PTDEBUG && _d('This server returns nothing for SHOW REPLICA STATUS');
+      $self->{not_a_replica}->{$dbh}++;
   }
 }
 
-sub get_master_status {
+sub get_source_status {
    my ( $self, $dbh ) = @_;
 
-   if ( $self->{not_a_master}->{$dbh} ) {
-      PTDEBUG && _d('Server on dbh', $dbh, 'is not a master');
+   if ( $self->{not_a_source}->{$dbh} ) {
+      PTDEBUG && _d('Server on dbh', $dbh, 'is not a source');
       return;
+   }
+
+   my $vp = VersionParser->new($dbh);
+   my $source_name = 'binary log';
+   if ( $vp lt '8.1' || $vp->flavor() =~ m/maria/ ) {
+      $source_name = 'master';
    }
 
    my $sth;
    if ( $self->{sths}->{$dbh} && $dbh && $self->{sths}->{$dbh} == $dbh ) {
-      $sth = $self->{sths}->{$dbh}->{MASTER_STATUS}
-         ||= $dbh->prepare('SHOW MASTER STATUS');
+      $sth = $self->{sths}->{$dbh}->{SOURCE_STATUS}
+         ||= $dbh->prepare("SHOW ${source_name} STATUS");
    }
    else {
-      $sth = $dbh->prepare('SHOW MASTER STATUS');
+      $sth = $dbh->prepare("SHOW ${source_name} STATUS");
    }
-   PTDEBUG && _d($dbh, 'SHOW MASTER STATUS');
+   PTDEBUG && _d($dbh, "SHOW ${source_name} STATUS");
    $sth->execute();
    my ($ms) = @{$sth->fetchall_arrayref({})};
    PTDEBUG && _d(
@@ -5629,42 +5660,43 @@ sub get_master_status {
           : '');
 
    if ( !$ms || scalar keys %$ms < 2 ) {
-      PTDEBUG && _d('Server on dbh', $dbh, 'does not seem to be a master');
-      $self->{not_a_master}->{$dbh}++;
+      PTDEBUG && _d('Server on dbh', $dbh, 'does not seem to be a source');
+      $self->{not_a_source}->{$dbh}++;
    }
 
   return { map { lc($_) => $ms->{$_} } keys %$ms }; # lowercase the keys
 }
 
-sub wait_for_master {
+sub wait_for_source {
    my ( $self, %args ) = @_;
-   my @required_args = qw(master_status slave_dbh);
+   my @required_args = qw(source_status replica_dbh);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($master_status, $slave_dbh) = @args{@required_args};
+   my ($source_status, $replica_dbh) = @args{@required_args};
    my $timeout       = $args{timeout} || 60;
 
    my $result;
    my $waited;
-   if ( $master_status ) {
-      my $slave_status;
+   if ( $source_status ) {
+      my $replica_status;
       eval {
-          $slave_status = $self->get_slave_status($slave_dbh);
+          $replica_status = $self->get_replica_status($replica_dbh);
       };
       if ($EVAL_ERROR) {
           return {
               result => undef,
               waited => 0,
-              error  =>'Wait for master: this is a multi-master slave but "channel" was not specified on the command line',
+              error  =>'Wait for source: this is a multi-source replica but "channel" was not specified on the command line',
           };
       }
-      my $server_version = VersionParser->new($slave_dbh);
-      my $channel_sql = $server_version > '5.6' && $self->{channel} ? ", '$self->{channel}'" : '';
-      my $sql = "SELECT MASTER_POS_WAIT('$master_status->{file}', $master_status->{position}, $timeout $channel_sql)";
-      PTDEBUG && _d($slave_dbh, $sql);
+      my $source_name = get_source_name($replica_dbh);
+      my $vp = VersionParser->new($replica_dbh);
+      my $channel_sql = $vp > '5.6' && $self->{channel} ? ", '$self->{channel}'" : '';
+      my $sql = "SELECT ${source_name}_POS_WAIT('$source_status->{file}', $source_status->{position}, $timeout $channel_sql)";
+      PTDEBUG && _d($replica_dbh, $sql);
       my $start = time;
-      ($result) = $slave_dbh->selectrow_array($sql);
+      ($result) = $replica_dbh->selectrow_array($sql);
 
       $waited = time - $start;
 
@@ -5672,7 +5704,7 @@ sub wait_for_master {
       PTDEBUG && _d("Waited", $waited, "seconds");
    }
    else {
-      PTDEBUG && _d('Not waiting: this server is not a master');
+      PTDEBUG && _d('Not waiting: this server is not a source');
    }
 
    return {
@@ -5681,75 +5713,84 @@ sub wait_for_master {
    };
 }
 
-sub stop_slave {
+sub stop_replica {
    my ( $self, $dbh ) = @_;
-   my $sth = $self->{sths}->{$dbh}->{STOP_SLAVE}
-         ||= $dbh->prepare('STOP SLAVE');
+   my $replica_name = get_replica_name($dbh);
+
+   my $sth = $self->{sths}->{$dbh}->{STOP_REPLICA}
+         ||= $dbh->prepare("STOP ${replica_name}");
    PTDEBUG && _d($dbh, $sth->{Statement});
    $sth->execute();
 }
 
-sub start_slave {
+sub start_replica {
    my ( $self, $dbh, $pos ) = @_;
+
+   my $source_name = get_source_name($dbh);
+   my $replica_name = get_replica_name($dbh);
+
    if ( $pos ) {
-      my $sql = "START SLAVE UNTIL MASTER_LOG_FILE='$pos->{file}', "
-              . "MASTER_LOG_POS=$pos->{position}";
+      my $sql = "START ${replica_name} UNTIL ${source_name}_LOG_FILE='$pos->{file}', "
+              . "${source_name}_LOG_POS=$pos->{position}";
       PTDEBUG && _d($dbh, $sql);
       $dbh->do($sql);
    }
    else {
-      my $sth = $self->{sths}->{$dbh}->{START_SLAVE}
-            ||= $dbh->prepare('START SLAVE');
+      my $sth = $self->{sths}->{$dbh}->{START_REPLICA}
+            ||= $dbh->prepare("START ${replica_name}");
       PTDEBUG && _d($dbh, $sth->{Statement});
       $sth->execute();
    }
 }
 
-sub catchup_to_master {
-   my ( $self, $slave, $master, $timeout ) = @_;
-   $self->stop_slave($master);
-   $self->stop_slave($slave);
-   my $slave_status  = $self->get_slave_status($slave);
-   my $slave_pos     = $self->repl_posn($slave_status);
-   my $master_status = $self->get_master_status($master);
-   my $master_pos    = $self->repl_posn($master_status);
-   PTDEBUG && _d('Master position:', $self->pos_to_string($master_pos),
-      'Slave position:', $self->pos_to_string($slave_pos));
+sub catchup_to_source {
+   my ( $self, $replica, $source, $timeout ) = @_;
+   $self->stop_replica($source);
+   $self->stop_replica($replica);
+   my $replica_status  = $self->get_replica_status($replica);
+   my $replica_pos     = $self->repl_posn($replica_status);
+   my $source_status = $self->get_source_status($source);
+   my $source_pos    = $self->repl_posn($source_status);
+   PTDEBUG && _d('Source position:', $self->pos_to_string($source_pos),
+      'Replica position:', $self->pos_to_string($replica_pos));
 
    my $result;
-   if ( $self->pos_cmp($slave_pos, $master_pos) < 0 ) {
-      PTDEBUG && _d('Waiting for slave to catch up to master');
-      $self->start_slave($slave, $master_pos);
+   if ( $self->pos_cmp($replica_pos, $source_pos) < 0 ) {
+      PTDEBUG && _d('Waiting for replica to catch up to source');
+      $self->start_replica($replica, $source_pos);
 
-      $result = $self->wait_for_master(
-            master_status => $master_status,
-            slave_dbh     => $slave,
+      $result = $self->wait_for_source(
+            source_status => $source_status,
+            replica_dbh   => $replica,
             timeout       => $timeout,
-            master_status => $master_status
+            source_status => $source_status
       );
       if ($result->{error}) {
           die $result->{error};
       }
       if ( !defined $result->{result} ) {
-         $slave_status = $self->get_slave_status($slave);
-         if ( !$self->slave_is_running($slave_status) ) {
-            PTDEBUG && _d('Master position:',
-               $self->pos_to_string($master_pos),
-               'Slave position:', $self->pos_to_string($slave_pos));
-            $slave_pos = $self->repl_posn($slave_status);
-            if ( $self->pos_cmp($slave_pos, $master_pos) != 0 ) {
-               die "MASTER_POS_WAIT() returned NULL but slave has not "
-                  . "caught up to master";
+         $replica_status = $self->get_replica_status($replica);
+            
+         my $replica_name = get_replica_name($replica);
+
+         if ( !$self->replica_is_running($replica_status, $replica_name) ) {
+            PTDEBUG && _d('Source position:',
+               $self->pos_to_string($source_pos),
+               'Replica position:', $self->pos_to_string($replica_pos));
+            $replica_pos = $self->repl_posn($replica_status);
+            if ( $self->pos_cmp($replica_pos, $source_pos) != 0 ) {
+               die "SOURCE_POS_WAIT() returned NULL but replica has not "
+                  . "caught up to source";
             }
-            PTDEBUG && _d('Slave is caught up to master and stopped');
+            PTDEBUG && _d('Replica is caught up to source and stopped');
          }
          else {
-            die "Slave has not caught up to master and it is still running";
+            die "Replica has not caught up to source and it is still running";
          }
       }
    }
    else {
-      PTDEBUG && _d("Slave is already caught up to master");
+      PTDEBUG && _d("Replica is already caught up to source");
    }
 
    return $result;
@@ -5757,26 +5798,30 @@ sub catchup_to_master {
 
 sub catchup_to_same_pos {
    my ( $self, $s1_dbh, $s2_dbh ) = @_;
-   $self->stop_slave($s1_dbh);
-   $self->stop_slave($s2_dbh);
-   my $s1_status = $self->get_slave_status($s1_dbh);
-   my $s2_status = $self->get_slave_status($s2_dbh);
+   $self->stop_replica($s1_dbh);
+   $self->stop_replica($s2_dbh);
+   my $s1_status = $self->get_replica_status($s1_dbh);
+   my $s2_status = $self->get_replica_status($s2_dbh);
    my $s1_pos    = $self->repl_posn($s1_status);
    my $s2_pos    = $self->repl_posn($s2_status);
    if ( $self->pos_cmp($s1_pos, $s2_pos) < 0 ) {
-      $self->start_slave($s1_dbh, $s2_pos);
+      $self->start_replica($s1_dbh, $s2_pos);
    }
    elsif ( $self->pos_cmp($s2_pos, $s1_pos) < 0 ) {
-      $self->start_slave($s2_dbh, $s1_pos);
+      $self->start_replica($s2_dbh, $s1_pos);
    }
 
-   $s1_status = $self->get_slave_status($s1_dbh);
-   $s2_status = $self->get_slave_status($s2_dbh);
+   $s1_status = $self->get_replica_status($s1_dbh);
+   $s2_status = $self->get_replica_status($s2_dbh);
    $s1_pos    = $self->repl_posn($s1_status);
    $s2_pos    = $self->repl_posn($s2_status);
 
-   if ( $self->slave_is_running($s1_status)
-     || $self->slave_is_running($s2_status)
+   my $replica1_name = get_replica_name($s1_dbh);
+
+   my $replica2_name = get_replica_name($s2_dbh);
+
+   if ( $self->replica_is_running($s1_status, $replica1_name)
+     || $self->replica_is_running($s2_status, $replica2_name)
      || $self->pos_cmp($s1_pos, $s2_pos) != 0)
    {
       die "The servers aren't both stopped at the same position";
@@ -5784,14 +5829,17 @@ sub catchup_to_same_pos {
 
 }
 
-sub slave_is_running {
-   my ( $self, $slave_status ) = @_;
-   return ($slave_status->{slave_sql_running} || 'No') eq 'Yes';
+sub replica_is_running {
+   my ( $self, $replica_status, $replica_name ) = @_;
+   return ($replica_status->{"${replica_name}_sql_running"} || 'No') eq 'Yes';
 }
 
-sub has_slave_updates {
+sub has_replica_updates {
    my ( $self, $dbh ) = @_;
-   my $sql = q{SHOW VARIABLES LIKE 'log_slave_updates'};
+   
+   my $replica_name = get_replica_name($dbh);
+
+   my $sql = qq{SHOW VARIABLES LIKE 'log_${replica_name}_updates'};
    PTDEBUG && _d($dbh, $sql);
    my ($name, $value) = $dbh->selectrow_array($sql);
    return $value && $value =~ m/^(1|ON)$/;
@@ -5805,6 +5853,12 @@ sub repl_posn {
          position => $status->{position},
       };
    }
+   elsif ( exists $status->{relay_source_log_file} && exists $status->{exec_source_log_pos} ) {
+      return {
+         file     => $status->{relay_source_log_file},
+         position => $status->{exec_source_log_pos},
+      };
+   }
    else {
       return {
          file     => $status->{relay_master_log_file},
@@ -5813,11 +5867,14 @@ sub repl_posn {
    }
 }
 
-sub get_slave_lag {
+sub get_replica_lag {
    my ( $self, $dbh ) = @_;
-   my $stat = $self->get_slave_status($dbh);
-   return unless $stat;  # server is not a slave
-   return $stat->{seconds_behind_master};
+   
+   my $source_name = get_source_name($dbh);
+
+   my $stat = $self->get_replica_status($dbh);
+   return unless $stat;  # server is not a replica
+   return $stat->{"seconds_behind_${source_name}"};
 }
 
 sub pos_cmp {
@@ -5828,9 +5885,9 @@ sub pos_cmp {
 sub short_host {
    my ( $self, $dsn ) = @_;
    my ($host, $port);
-   if ( $dsn->{master_host} ) {
-      $host = $dsn->{master_host};
-      $port = $dsn->{master_port};
+   if ( $dsn->{source_host} ) {
+      $host = $dsn->{source_host};
+      $port = $dsn->{source_port};
    }
    else {
       $host = $dsn->{h};
@@ -5845,7 +5902,7 @@ sub is_replication_thread {
 
    my $type = lc($args{type} || 'all');
    die "Invalid type: $type"
-      unless $type =~ m/^binlog_dump|slave_io|slave_sql|all$/i;
+      unless $type =~ m/^binlog_dump|slave_io|slave_sql|replica_io|replica_sql|all$/i;
 
    my $match = 0;
    if ( $type =~ m/binlog_dump|all/i ) {
@@ -5854,7 +5911,7 @@ sub is_replication_thread {
    }
    if ( !$match ) {
       if ( ($query->{User} || $query->{user} || '') eq "system user" ) {
-         PTDEBUG && _d("Slave replication thread");
+         PTDEBUG && _d("Replica replication thread");
          if ( $type ne 'all' ) {
             my $state = $query->{State} || $query->{state} || '';
 
@@ -5863,15 +5920,16 @@ sub is_replication_thread {
                $match = 1;
             }
             else {
-               my ($slave_sql) = $state =~ m/
+               my ($replica_sql) = $state =~ m/
                   ^(Waiting\sfor\sthe\snext\sevent
                    |Reading\sevent\sfrom\sthe\srelay\slog
                    |Has\sread\sall\srelay\slog;\swaiting
                    |Making\stemp\sfile
-                   |Waiting\sfor\sslave\smutex\son\sexit)/xi;
+                   |Waiting\sfor\sslave\smutex\son\sexit
+                   |Waiting\sfor\sreplica\smutex\son\sexit)/xi;
 
-               $match = $type eq 'slave_sql' &&  $slave_sql ? 1
-                      : $type eq 'slave_io'  && !$slave_sql ? 1
+               $match = $type eq 'replica_sql' &&  $replica_sql ? 1
+                      : $type eq 'replica_io'  && !$replica_sql ? 1
                       :                                       0;
             }
          }
@@ -5912,9 +5970,11 @@ sub get_replication_filters {
    }
    my ($dbh) = @args{@required_args};
 
+   my $replica_name = get_replica_name($dbh);
+
    my %filters = ();
 
-   my $status = $self->get_master_status($dbh);
+   my $status = $self->get_source_status($dbh);
    if ( $status ) {
       map { $filters{$_} = $status->{$_} }
       grep { defined $status->{$_} && $status->{$_} ne '' }
@@ -5924,7 +5984,7 @@ sub get_replication_filters {
       );
    }
 
-   $status = $self->get_slave_status($dbh);
+   $status = $self->get_replica_status($dbh);
    if ( $status ) {
       map { $filters{$_} = $status->{$_} }
       grep { defined $status->{$_} && $status->{$_} ne '' }
@@ -5937,10 +5997,10 @@ sub get_replication_filters {
          replicate_wild_ignore_table
       );
 
-      my $sql = "SHOW VARIABLES LIKE 'slave_skip_errors'";
+      my $sql = "SHOW VARIABLES LIKE '${replica_name}_skip_errors'";
       PTDEBUG && _d($dbh, $sql);
       my $row = $dbh->selectrow_arrayref($sql);
-      $filters{slave_skip_errors} = $row->[1] if $row->[1] && $row->[1] ne 'OFF';
+      $filters{replica_skip_errors} = $row->[1] if $row->[1] && $row->[1] ne 'OFF';
    }
 
    return \%filters;
@@ -6018,6 +6078,18 @@ sub get_cxn_from_dsn_table {
       $done = 1;
    } until $done;
    return \@cxn;
+}
+
+sub get_source_name {
+   my ($dbh) = @_;
+   my $vp = VersionParser->new($dbh);
+   return ($vp lt '8.1' || $vp->flavor() =~ m/maria/) ? 'master' : 'source';
+}
+
+sub get_replica_name {
+   my ($dbh) = @_;
+   my $vp = VersionParser->new($dbh);
+   return ($vp lt '8.1' || $vp->flavor() =~ m/maria/) ? 'slave' : 'replica';
 }
 
 sub _d {
@@ -6399,11 +6471,11 @@ sub _make_xor_slices {
 
 sub find_replication_differences {
    my ($self, %args) = @_;
-   my @required_args = qw(dbh repl_table);
+   my @required_args = qw(dbh repl_table source_crc_name source_cnt_name);
    foreach my $arg( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $repl_table) = @args{@required_args};
+   my ($dbh, $repl_table, $source_crc_name, $source_cnt_name) = @args{@required_args};
 
 
    my $tries = $self->{'OptionParser'}->get('replicate-check-retries') || 1;
@@ -6412,13 +6484,13 @@ sub find_replication_differences {
       my $sql
          = "SELECT CONCAT(db, '.', tbl) AS `table`, "
          . "chunk, chunk_index, lower_boundary, upper_boundary, "
-         . "COALESCE(this_cnt-master_cnt, 0) AS cnt_diff, "
+         . "COALESCE(this_cnt-${source_cnt_name}, 0) AS cnt_diff, "
          . "COALESCE("
-         .   "this_crc <> master_crc OR ISNULL(master_crc) <> ISNULL(this_crc), 0"
-         . ") AS crc_diff, this_cnt, master_cnt, this_crc, master_crc "
+         .   "this_crc <> ${source_crc_name} OR ISNULL(${source_crc_name}) <> ISNULL(this_crc), 0"
+         . ") AS crc_diff, this_cnt, ${source_cnt_name}, this_crc, ${source_crc_name} "
          . "FROM $repl_table "
-         . "WHERE (master_cnt <> this_cnt OR master_crc <> this_crc "
-         .        "OR ISNULL(master_crc) <> ISNULL(this_crc)) "
+         . "WHERE (${source_cnt_name} <> this_cnt OR ${source_crc_name} <> this_crc "
+         .        "OR ISNULL(${source_crc_name}) <> ISNULL(this_crc)) "
          . ($args{where} ? " AND ($args{where})" : "");
       PTDEBUG && _d($sql);
       $diffs = $dbh->selectall_arrayref($sql, { Slice => {} });
@@ -8774,7 +8846,7 @@ use Data::Dumper;
 
 sub new {
    my ( $class, %args ) = @_;
-   my @required_args = qw(oktorun get_lag sleep max_lag slaves);
+   my @required_args = qw(oktorun get_lag sleep max_lag replicas);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless defined $args{$arg};
    }
@@ -8794,32 +8866,32 @@ sub wait {
    }
    my $pr = $args{Progress};
 
-   my $oktorun = $self->{oktorun};
-   my $get_lag = $self->{get_lag};
-   my $sleep   = $self->{sleep};
-   my $slaves  = $self->{slaves};
-   my $max_lag = $self->{max_lag};
+   my $oktorun  = $self->{oktorun};
+   my $get_lag  = $self->{get_lag};
+   my $sleep    = $self->{sleep};
+   my $replicas = $self->{replicas}; 
+   my $max_lag  = $self->{max_lag};
 
-   my $worst;  # most lagging slave
+   my $worst;  # most lagging replica
    my $pr_callback;
    my $pr_first_report;
 
-   my $pr_refresh_slave_list = sub {
+   my $pr_refresh_replica_list = sub {
       my ($self) = @_;
-      my ($slaves, $refresher) = ($self->{slaves}, $self->{get_slaves_cb});
-      return $slaves if ( not defined $refresher );
-      my $before = join ' ', sort map {$_->description()} @$slaves;
-      $slaves = $refresher->();
-      my $after = join ' ', sort map {$_->description()} @$slaves;
+      my ($replicas, $refresher) = ($self->{replicas}, $self->{get_replicas_cb});
+      return $replicas if ( not defined $refresher );
+      my $before = join ' ', sort map {$_->description()} @$replicas;
+      $replicas = $refresher->();
+      my $after = join ' ', sort map {$_->description()} @$replicas;
       if ($before ne $after) {
-         $self->{slaves} = $slaves;
-         printf STDERR "Slave set to watch has changed\n  Was: %s\n  Now: %s\n",
+         $self->{replicas} = $replicas;
+         printf STDERR "Replica set to watch has changed\n  Was: %s\n  Now: %s\n",
             $before, $after;
       }
-      return($self->{slaves});
+      return($self->{replicas});
    };
 
-   $slaves = $pr_refresh_slave_list->($self);
+   $replicas = $pr_refresh_replica_list->($self);
 
    if ( $pr ) {
       $pr_callback = sub {
@@ -8852,44 +8924,44 @@ sub wait {
       };
    }
 
-   my @lagged_slaves = map { {cxn=>$_, lag=>undef} } @$slaves;
-   while ( $oktorun->() && @lagged_slaves ) {
-      PTDEBUG && _d('Checking slave lag');
+   my @lagged_replicas = map { {cxn=>$_, lag=>undef} } @$replicas;
+   while ( $oktorun->() && @lagged_replicas ) {
+      PTDEBUG && _d('Checking replica lag');
 
-      $slaves = $pr_refresh_slave_list->($self);
+      $replicas = $pr_refresh_replica_list->($self);
       my $watched = 0;
-      @lagged_slaves = grep {
-         my $slave_name = $_->{cxn}->name();
-         grep {$slave_name eq $_->name()} @{$slaves // []}
-                            } @lagged_slaves;
+      @lagged_replicas = grep {
+         my $replica_name = $_->{cxn}->name();
+         grep {$replica_name eq $_->name()} @{$replicas // []}
+                            } @lagged_replicas;
 
-      for my $i ( 0..$#lagged_slaves ) {
+      for my $i ( 0..$#lagged_replicas ) {
          my $lag;
          eval {
-             $lag = $get_lag->($lagged_slaves[$i]->{cxn});
+             $lag = $get_lag->($lagged_replicas[$i]->{cxn});
          };
          if ($EVAL_ERROR) {
              die $EVAL_ERROR;
          }
-         PTDEBUG && _d($lagged_slaves[$i]->{cxn}->name(),
-            'slave lag:', $lag);
+         PTDEBUG && _d($lagged_replicas[$i]->{cxn}->name(),
+            'replica lag:', $lag);
          if ( !defined $lag || $lag > $max_lag ) {
-            $lagged_slaves[$i]->{lag} = $lag;
+            $lagged_replicas[$i]->{lag} = $lag;
          }
          else {
-            delete $lagged_slaves[$i];
+            delete $lagged_replicas[$i];
          }
       }
 
-      @lagged_slaves = grep { defined $_ } @lagged_slaves;
-      if ( @lagged_slaves ) {
-         @lagged_slaves = reverse sort {
+      @lagged_replicas = grep { defined $_ } @lagged_replicas;
+      if ( @lagged_replicas ) {
+         @lagged_replicas = reverse sort {
               defined $a->{lag} && defined $b->{lag} ? $a->{lag} <=> $b->{lag}
             : defined $a->{lag}                      ? -1
             :                                           1;
-         } @lagged_slaves;
-         $worst = $lagged_slaves[0];
-         PTDEBUG && _d(scalar @lagged_slaves, 'slaves are lagging, worst:',
+         } @lagged_replicas;
+         $worst = $lagged_replicas[0];
+         PTDEBUG && _d(scalar @lagged_replicas, 'replicas are lagging, worst:',
             $worst->{lag}, 'on', Dumper($worst->{cxn}->dsn()));
 
          if ( $pr ) {
@@ -8904,7 +8976,7 @@ sub wait {
       }
    }
 
-   PTDEBUG && _d('All slaves caught up');
+   PTDEBUG && _d('All replicas caught up');
    return;
 }
 
@@ -9659,7 +9731,7 @@ sub new {
 
 sub update {
    my ($self, $n, $t) = @_;
-   PTDEBUG && _d('Master op time:', $n, 'n /', $t, 's');
+   PTDEBUG && _d('Source op time:', $n, 'n /', $t, 's');
 
    if ( $self->{avg_n} && $self->{avg_t} ) {
       $self->{avg_n}    = ($self->{avg_n} * $self->{weight}) + $n;
@@ -10019,7 +10091,7 @@ use sigtrap 'handler', \&sig_int, 'normal-signals';
 my $oktorun      = 1;
 my $print_header = 1;
 my $exit_status  = 0;
-my $original_qrt_plugin_master_status = undef;
+my $original_qrt_plugin_source_status = undef;
 
 # "exit codes 1 - 2, 126 - 165, and 255 [1] have special meanings,
 # and should therefore be avoided for user-specified exit parameters"
@@ -10029,7 +10101,7 @@ our %PTC_EXIT_STATUS = (
    ERROR               => 1,
    ALREADY_RUNNING     => 2,
    CAUGHT_SIGNAL       => 4,
-   NO_SLAVES_FOUND     => 8,
+   NO_REPLICAS_FOUND     => 8,
    # Tool-specific flags:
    TABLE_DIFF          => 16,
    SKIP_CHUNK          => 32,
@@ -10080,6 +10152,44 @@ sub main {
    my $o = new OptionParser();
    $o->get_specs();
    $o->get_opts();
+
+   # Deprecated options
+   if ( my $slaves = $o->get('check-slave-lag') ) {
+      warn "Option --check-slave-lag is deprecated and will be removed in future versions. Use --check-replica-lag instead.";
+      if ( my $replicas = $o->get('check-replica-lag') ) {
+         push(@$slaves, @$replicas);
+      }
+      $o->set('check-replica-lag', $slaves);
+   }
+
+   if ( my $slaves = $o->get('skip-check-slave-lag') ) {
+      warn "Option --skip-check-slave-lag is deprecated and will be removed in future versions. Use --skip-check-replica-lag instead.";
+      if ( my $replicas = $o->get('skip-check-replica-lag') ) {
+         push(@$slaves, @$replicas);
+      }
+      $o->set('skip-check-replica-lag', $slaves);
+   }
+
+   if ( $o->got('check-slave-tables') ) {
+      warn "Option --[no]check-slave-tables is deprecated and will be removed in future versions. Use --[no]check-replica-tables instead.";
+      if ( !$o->got('check-replica-tables') ) {
+         $o->set('check-replica-tables', $o->get('check-slave-tables'));
+      }
+   }
+
+   if ( $o->got('slave-user') ) {
+      warn "Option --slave-user is deprecated and will be removed in future versions. Use --replica-user instead.";
+      if ( !$o->got('replica-user') ) {
+         $o->set('replica-user', $o->get('slave-user'));
+      }
+   }
+
+   if ( $o->got('slave-password') ) {
+      warn "Option --slave-password is deprecated and will be removed in future versions. Use --replica-password instead.";
+      if ( !$o->got('replica-password') ) {
+         $o->set('replica-password', $o->get('slave-password'));
+      }
+   }
 
    my $dp = $o->DSNParser();
    $dp->prop('set-vars', $o->set_vars());
@@ -10194,7 +10304,7 @@ sub main {
    }
 
    # ########################################################################
-   # Connect to the master.
+   # Connect to the source.
    # ########################################################################
 
    my $set_on_connect = sub {
@@ -10282,7 +10392,7 @@ sub main {
 
    # Do not call "new Cxn(" directly; use this sub so that set_on_connect
    # is applied to every cxn.
-   # TODO: maybe this stuff only needs to be set on master cxn?
+   # TODO: maybe this stuff only needs to be set on source cxn?
    my $make_cxn = sub {
       my (%args) = @_;
       my $cxn = new Cxn(
@@ -10299,23 +10409,26 @@ sub main {
    };
 
    # The dbh and dsn can be used before checksumming starts, but once
-   # inside the main TABLE loop, only use the master cxn because its
+   # inside the main TABLE loop, only use the source cxn because its
    # dbh may be recreated.
-   my $master_cxn = $make_cxn->(set_vars => 1, dsn_string => shift @ARGV);
-   my $master_dbh = $master_cxn->dbh();  # just for brevity
-   my $master_dsn = $master_cxn->dsn();  # just for brevity
+   my $source_cxn = $make_cxn->(set_vars => 1, dsn_string => shift @ARGV);
+   my $source_dbh = $source_cxn->dbh();  # just for brevity
+   my $source_dsn = $source_cxn->dsn();  # just for brevity
+
+   my $source_name = MasterSlave::get_source_name($source_dbh);
+   my $replica_name = MasterSlave::get_replica_name($source_dbh);
 
    if ($o->get('disable-qrt-plugin')) {
        eval {
-           $master_dbh->selectrow_arrayref('SELECT @@query_response_time_session_stats' );
+           $source_dbh->selectrow_arrayref('SELECT @@query_response_time_session_stats' );
        };
        if ($EVAL_ERROR) {
-           $original_qrt_plugin_master_status = undef;
+           $original_qrt_plugin_source_status = undef;
            PTDEBUG && _d('QRT plugin is not installed: '.$EVAL_ERROR);
        } else {
-           ($original_qrt_plugin_master_status) = $master_dbh->selectrow_arrayref('SELECT @@query_response_time_stats' );
-           PTDEBUG && _d("Disabling qrt plugin on master server");
-           $master_dbh->do('SET GLOBAL query_response_time_stats = off');
+           ($original_qrt_plugin_source_status) = $source_dbh->selectrow_arrayref('SELECT @@query_response_time_stats' );
+           PTDEBUG && _d("Disabling qrt plugin on source server");
+           $source_dbh->do('SET GLOBAL query_response_time_stats = off');
        }
    }
 
@@ -10323,13 +10436,13 @@ sub main {
    my @rocksdb_ignored = grep(/^ROCKSDB$/i, @ignored_engines);
    if (!@rocksdb_ignored) {
        print STDOUT "Checking if all tables can be checksummed ...\n";
-       my $mysql_config = MySQLConfig->new(dbh => $master_dbh);
+       my $mysql_config = MySQLConfig->new(dbh => $source_dbh);
        my $has_rocksdb = $mysql_config->has_engine('ROCKSDB');
        if ($has_rocksdb) {
            my $sql = "SELECT DISTINCT `table_name`, `table_schema`, `engine` FROM `information_schema`.`tables` " .
                      " WHERE `table_schema` NOT IN ('mysql', 'information_schema', 'performance_schema') " .
                      "   AND `engine` LIKE 'ROCKSDB'";
-           my $rows = $master_dbh->selectall_arrayref($sql, {Slice=>{}});
+           my $rows = $source_dbh->selectall_arrayref($sql, {Slice=>{}});
            my $not_ignored_rocks_db_tables_count= scalar @$rows;
            if (@$rows) {
                my ($tables_list, $separator) = ('', '');
@@ -10380,17 +10493,17 @@ sub main {
    # ########################################################################
    my $cluster = Percona::XtraDB::Cluster->new();
    my %cluster_name_for;
-   $cluster_name_for{$master_cxn} = $cluster->is_cluster_node($master_cxn);
+   $cluster_name_for{$source_cxn} = $cluster->is_cluster_node($source_cxn);
 
-   if ( $cluster_name_for{$master_cxn} ) {
+   if ( $cluster_name_for{$source_cxn} ) {
       # Because of https://bugs.launchpad.net/codership-mysql/+bug/1040108
       # ptc and pt-osc check Threads_running by default for --max-load.
       # Strictly speaking, they can run on 5.5.27 as long as that bug doesn't
       # manifest itself.  If it does, however, then the tools will wait forever.
-      my $pxc_version = VersionParser->new($master_dbh);
+      my $pxc_version = VersionParser->new($source_dbh);
       if ( $pxc_version < '5.5.28' ) {
          die "Percona XtraDB Cluster 5.5.28 or newer is required to run "
-            . "this tool on a cluster, but node " . $master_cxn->name
+            . "this tool on a cluster, but node " . $source_cxn->name
             . " is running version " . $pxc_version->version
             . ".  Please upgrade the node, or run the tool on a newer node, "
             . "or contact Percona for support.\n";
@@ -10401,7 +10514,7 @@ sub main {
    # If this is not a dry run (--explain was not specified), then we're
    # going to checksum the tables, so do the necessary preparations and
    # checks.  Else, this all can be skipped because all we need for a
-   # dry run is a connection to the master.
+   # dry run is a connection to the source.
    # ########################################################################
    my $q  = new Quoter();
    my $tp = new TableParser(Quoter => $q);
@@ -10413,8 +10526,8 @@ sub main {
       channel      => $o->get('channel')
    );
 
-   my $slaves = [];    # all slaves (that we can find)
-   my $slave_lag_cxns; # slaves whose lag we'll check
+   my $replicas = [];    # all replicas (that we can find)
+   my $replica_lag_cxns; # replicas whose lag we'll check
 
    # ########################################################################
    # Create --plugin.
@@ -10428,7 +10541,7 @@ sub main {
       die "Error loading --plugin $file: $EVAL_ERROR" if $EVAL_ERROR;
       eval {
          $plugin = pt_table_checksum_plugin->new(
-            master_cxn  => $master_cxn,
+            source_cxn  => $source_cxn,
             explain     => $o->get('explain'),
             quiet       => $o->get('quiet'),
             resume      => $o->get('resume'),
@@ -10447,12 +10560,15 @@ sub main {
 
    my $repl_table = $q->quote($q->split_unquote($o->get('replicate')));
    my $fetch_sth;  # fetch chunk from repl table
-   my $update_sth; # update master_cnt and master_cnt in repl table
+   my $update_sth; # update source_cnt and source_cnt in repl table
    my $delete_sth; # delete checksums for one db.tbl from repl table
+
+   my ($source_crc_name, $source_cnt_name); # do we use legacy checksum table definition?
+
 
    if ( $o->get('truncate-replicate-table') ) {
        eval {
-           $master_dbh->do("TRUNCATE TABLE $repl_table");
+           $source_dbh->do("TRUNCATE TABLE $repl_table");
        };
        if ($EVAL_ERROR) {
            PTDEBUG && _d( "Cannot truncate replicate table $repl_table. $EVAL_ERROR");
@@ -10461,22 +10577,22 @@ sub main {
 
    if ( !$o->get('explain') ) {
       # #####################################################################
-      # Find and connect to slaves.
+      # Find and connect to replicas.
       # #####################################################################
       my $make_cxn_cluster = sub {
-         my $cxn = $make_cxn->(@_, prev_dsn => $master_cxn->dsn());
+         my $cxn = $make_cxn->(@_, prev_dsn => $source_cxn->dsn());
          $cluster_name_for{$cxn} = $cluster->is_cluster_node($cxn);
          return $cxn;
       };
 
-      $slaves = $ms->get_slaves(
-         dbh      => $master_dbh,
-         dsn      => $master_dsn,
+      $replicas = $ms->get_replicas(
+         dbh      => $source_dbh,
+         dsn      => $source_dsn,
          make_cxn => $make_cxn_cluster,
       );
 
       my %seen_ids;
-      for my $cxn ($master_cxn, @$slaves) {
+      for my $cxn ($source_cxn, @$replicas) {
          my $dbh  = $cxn->dbh();
          # get server/node unique id ( https://bugs.launchpad.net/percona-toolkit/+bug/1217466 )
          my $id = $cxn->get_id();
@@ -10484,7 +10600,7 @@ sub main {
       }
 
       if ( $autodiscover_cluster ) {
-         my @known_nodes = grep { $cluster_name_for{$_} } $master_cxn, @$slaves;
+         my @known_nodes = grep { $cluster_name_for{$_} } $source_cxn, @$replicas;
          my $new_cxns = $cluster->autodetect_nodes(
                            nodes       => \@known_nodes,
                            MasterSlave => $ms,
@@ -10492,27 +10608,27 @@ sub main {
                            make_cxn    => $make_cxn_cluster,
                            seen_ids    => \%seen_ids,
                         );
-         push @$slaves, @$new_cxns;
+         push @$replicas, @$new_cxns;
       }
 
       my $trimmed_nodes = Cxn->remove_duplicate_cxns(
-         cxns => [ $master_cxn, @$slaves ],
+         cxns => [ $source_cxn, @$replicas ],
       );
-      ($master_cxn, @$slaves) = @$trimmed_nodes;
+      ($source_cxn, @$replicas) = @$trimmed_nodes;
 
-      # If no slaves or nodes were found, and a recursion method was given
+      # If no replicas or nodes were found, and a recursion method was given
       # (implicitly or explicitly), and that method is not none, then warn
       # and continue but exit non-zero because there won't be any diffs but
-      # this could be a false-positive from having no slaves/nodes to check.
+      # this could be a false-positive from having no replicas/nodes to check.
       # https://bugs.launchpad.net/percona-toolkit/+bug/1210537
-      PTDEBUG && _d(scalar @$slaves, 'slaves found');
-      if ( !@$slaves
+      PTDEBUG && _d(scalar @$replicas, 'replicas found');
+      if ( !@$replicas
            && (($o->get('recursion-method')->[0] || '') ne 'none'
                || $autodiscover_cluster))
       {
-         $exit_status |= $PTC_EXIT_STATUS{NO_SLAVES_FOUND};
+         $exit_status |= $PTC_EXIT_STATUS{NO_REPLICAS_FOUND};
          if ( $o->get('quiet') < 2 ) {
-            my $type = $autodiscover_cluster ? 'cluster nodes' : 'slaves';
+            my $type = $autodiscover_cluster ? 'cluster nodes' : 'replicas';
             warn "Diffs cannot be detected because no $type were found.  "
                . "Please read the --recursion-method documentation for "
                . "information.\n";
@@ -10522,26 +10638,26 @@ sub main {
 
       # https://bugs.launchpad.net/percona-toolkit/+bug/938068
       if ( $o->get('check-binlog-format') ) {
-         my $master_binlog = 'STATEMENT';
-         if ( VersionParser->new($master_dbh) >= '5.1.5' ) {
-            ($master_binlog) = $master_dbh->selectrow_array(
+         my $source_binlog = 'STATEMENT';
+         if ( VersionParser->new($source_dbh) >= '5.1.5' ) {
+            ($source_binlog) = $source_dbh->selectrow_array(
                'SELECT @@binlog_format');
          }
 
          my $err = '';
-         for my $slave_cxn ( @$slaves ) {
+         for my $replica_cxn ( @$replicas ) {
             # https://bugs.launchpad.net/percona-toolkit/+bug/1080385
-            next if $cluster_name_for{$slave_cxn};
+            next if $cluster_name_for{$replica_cxn};
 
-            my $slave_binlog = 'STATEMENT';
-            if ( VersionParser->new($slave_cxn->dbh) >= '5.1.5' ) {
-               ($slave_binlog) = $slave_cxn->dbh->selectrow_array(
+            my $replica_binlog = 'STATEMENT';
+            if ( VersionParser->new($replica_cxn->dbh) >= '5.1.5' ) {
+               ($replica_binlog) = $replica_cxn->dbh->selectrow_array(
                   'SELECT @@binlog_format');
             }
 
-            if ( $master_binlog ne $slave_binlog ) {
-               $err .= "Replica " . $slave_cxn->name()
-                  . qq{ has binlog_format $slave_binlog which could cause }
+            if ( $source_binlog ne $replica_binlog ) {
+               $err .= "Replica " . $replica_cxn->name()
+                  . qq{ has binlog_format $replica_binlog which could cause }
                   . qq{pt-table-checksum to break replication.  Please read }
                   . qq{"Replicas using row-based replication" in the }
                   . qq{LIMITATIONS section of the tool's documentation.  }
@@ -10552,26 +10668,26 @@ sub main {
          die $err if $err;
       }
 
-      if ( $cluster_name_for{$master_cxn} ) {
-         if ( !@$slaves ) {
+      if ( $cluster_name_for{$source_cxn} ) {
+         if ( !@$replicas ) {
             if ( ($o->get('recursion-method')->[0] || '') ne 'none' ) {
-               die $master_cxn->name() . " is a cluster node but no other nodes "
+               die $source_cxn->name() . " is a cluster node but no other nodes "
                   . "or regular replicas were found.  Use --recursion-method=dsn "
                   . "to specify the other nodes in the cluster.\n";
             }
          }
 
-         # Make sure the master and all node are in the same cluster.
+         # Make sure the source and all node are in the same cluster.
          my @other_cluster;
-         foreach my $slave ( @$slaves ) {
-            next unless $cluster_name_for{$slave};
-            if ( $cluster_name_for{$master_cxn} ne $cluster_name_for{$slave}) {
-               push @other_cluster, $slave;
+         foreach my $replica ( @$replicas ) {
+            next unless $cluster_name_for{$replica};
+            if ( $cluster_name_for{$source_cxn} ne $cluster_name_for{$replica}) {
+               push @other_cluster, $replica;
             }
          }
          if ( @other_cluster ) {
-            die $master_cxn->name . " is in cluster "
-               . $cluster_name_for{$master_cxn} . " but these nodes are "
+            die $source_cxn->name . " is in cluster "
+               . $cluster_name_for{$source_cxn} . " but these nodes are "
                . "in other clusters:\n"
                . join("\n",
                   map {'  ' . $_->name . " is in cluster $cluster_name_for{$_}"}
@@ -10581,40 +10697,40 @@ sub main {
                . "Cluster section of the tool's documentation.\n";
          }
       }
-      elsif ( @$slaves ) {
-         # master is not a cluster node, but what about the slaves?
-         my $direct_slave;  # master -> direct_slave
-         my @slaves;        # traditional slaves
+      elsif ( @$replicas ) {
+         # source is not a cluster node, but what about the replicas?
+         my $direct_replica;  # source -> direct_replica
+         my @replicas;        # traditional replicas
          my @nodes;         # cluster nodes
-         foreach my $slave ( @$slaves ) {
-            if ( !$cluster_name_for{$slave} ) {
-               push @slaves, $slave;
+         foreach my $replica ( @$replicas ) {
+            if ( !$cluster_name_for{$replica} ) {
+               push @replicas, $replica;
                next;
             }
 
-            my $is_master_of = eval {
-               $ms->is_master_of($master_cxn->dbh, $slave->dbh);
+            my $is_source_of = eval {
+               $ms->is_source_of($source_cxn->dbh, $replica->dbh);
             };
-            if ( $EVAL_ERROR && $EVAL_ERROR =~ m/is not a slave/ ) {
-               push @nodes, $slave;
+            if ( $EVAL_ERROR && $EVAL_ERROR =~ m/is not a ${replica_name}/ ) {
+               push @nodes, $replica;
             }
-            elsif ( $is_master_of ) {
-               $direct_slave = $slave;
+            elsif ( $is_source_of ) {
+               $direct_replica = $replica;
             }
             else {
                # Another error could have happened but we don't really
-               # care.  We know for sure the slave is a node, so just
+               # care.  We know for sure the replica is a node, so just
                # presume that and carry on.
-               push @nodes, $slave;
+               push @nodes, $replica;
             }
          }
 
          my $err = '';
          if ( @nodes ) {
-            if ( $direct_slave ) {
+            if ( $direct_replica ) {
                warn "Diffs will only be detected if the cluster is "
-                  . "consistent with " . $direct_slave->name . " because "
-                  . $master_cxn->name . " is a traditional replication master "
+                  . "consistent with " . $direct_replica->name . " because "
+                  . $source_cxn->name . " is a traditional replication source "
                   . "but these replicas are cluster nodes:\n"
                   . join("\n", map { '  ' . $_->name } @nodes) . "\n"
                   . "For more information, please read the Percona XtraDB "
@@ -10622,157 +10738,118 @@ sub main {
             }
             else {
                warn "Diffs may not be detected on these cluster nodes "
-                  . "because the direct replica of " . $master_cxn->name
+                  . "because the direct replica of " . $source_cxn->name
                   . " was not found or specified:\n"
                   . join("\n", map { '  ' . $_->name } @nodes) . "\n"
                   . "For more information, please read the Percona XtraDB "
                   . "Cluster section of the tool's documentation.\n";
             }
 
-            if ( @slaves ) {
+            if ( @replicas ) {
                warn "Diffs will only be detected on these replicas if "
-                  . "they replicate from " . $master_cxn->name . ":\n"
-                  . join("\n", map { '  ' . $_->name } @slaves) . "\n"
+                  . "they replicate from " . $source_cxn->name . ":\n"
+                  . join("\n", map { '  ' . $_->name } @replicas) . "\n"
                   . "For more information, please read the Percona XtraDB "
                   . "Cluster section of the tool's documentation.\n";
             }
          }
       }
 
-      # don't touch the QRT plugin on the slave unless we asked for it
+      # don't touch the QRT plugin on the replica unless we asked for it
       # to be disabled.
       if ($o->get('disable-qrt-plugin')) {
-          for my $slave (@$slaves) {
+          for my $replica (@$replicas) {
               my $qrt_plugin_status;
               eval {
-                  ($qrt_plugin_status) = $slave->{dbh}->selectrow_arrayref('SELECT @@QUERY_RESPONSE_TIME_SESSION_STATS' );
+                  ($qrt_plugin_status) = $replica->{dbh}->selectrow_arrayref('SELECT @@QUERY_RESPONSE_TIME_SESSION_STATS' );
               };
               if ($EVAL_ERROR) {
-                  PTDEBUG && _d('QRT plugin is not installed on slave '.$slave->{dsn_name});
-                  $slave->{qrt_plugin_status} = undef;
+                  PTDEBUG && _d('QRT plugin is not installed on replica '.$replica->{dsn_name});
+                  $replica->{qrt_plugin_status} = undef;
                   next;
               }
-              $slave->{qrt_plugin_status} = $qrt_plugin_status->[0];
-              if ($slave->{qrt_plugin_status}) {
-                  PTDEBUG && _d("Disabling qrt plugin state on slave ".$slave->{dsn_name});
-                  $slave->{dbh}->do('SET GLOBAL query_response_time_stats = off');
+              $replica->{qrt_plugin_status} = $qrt_plugin_status->[0];
+              if ($replica->{qrt_plugin_status}) {
+                  PTDEBUG && _d("Disabling qrt plugin state on replica ".$replica->{dsn_name});
+                  $replica->{dbh}->do('SET GLOBAL query_response_time_stats = off');
               }
           }
       }
 
-      if ( $o->get('check-slave-lag') ) {
-         PTDEBUG && _d('Will use --check-slave-lag to check for slave lag');
+      if ( $o->get('check-replica-lag') ) {
+         PTDEBUG && _d('Will use --check-replica-lag to check for replica lag');
          my $cxn = $make_cxn->(
-            dsn_string => $o->get('check-slave-lag'),
-            prev_dsn   => $master_cxn->dsn(),
+            dsn_string => $o->get('check-replica-lag'),
+            prev_dsn   => $source_cxn->dsn(),
          );
-         $slave_lag_cxns = [ $cxn ];
+         $replica_lag_cxns = [ $cxn ];
       }
       else {
-         PTDEBUG && _d('Will check slave lag on all slaves');
-         $slave_lag_cxns = [ map { $_ } @$slaves ];
+         PTDEBUG && _d('Will check replica lag on all replicas');
+         $replica_lag_cxns = [ map { $_ } @$replicas ];
       }
 
-      # Cluster nodes aren't slaves, so SHOW SLAVE STATUS doesn't work.
+      # Cluster nodes aren't replicas, so SHOW REPLICA STATUS doesn't work.
       # Nodes shouldn't be out of sync anyway because the cluster is
       # (virtually) synchronous, so waiting for the last checksum chunk
       # to appear should be sufficient.
-      @$slave_lag_cxns = grep {
-         my $slave_cxn = $_;
-         if ( $cluster_name_for{$slave_cxn} ) {
-            warn "Not checking replica lag on " . $slave_cxn->name()
+      @$replica_lag_cxns = grep {
+         my $replica_cxn = $_;
+         if ( $cluster_name_for{$replica_cxn} ) {
+            warn "Not checking replica lag on " . $replica_cxn->name()
                . " because it is a cluster node.\n";
             0;
          }
          else {
-            PTDEBUG && _d('May check slave lag on', $slave_cxn->name());
-            $slave_cxn;
+            PTDEBUG && _d('May check replica lag on', $replica_cxn->name());
+            $replica_cxn;
          }
-      } @$slave_lag_cxns;
+      } @$replica_lag_cxns;
 
-      if ( $slave_lag_cxns && scalar @$slave_lag_cxns ) {
-         if ($o->get('skip-check-slave-lag')) {
-             my $slaves_to_skip = $o->get('skip-check-slave-lag');
-             my $filtered_slaves = [];
-             for my $slave (@$slave_lag_cxns) {
+      if ( $replica_lag_cxns && scalar @$replica_lag_cxns ) {
+         if ($o->get('skip-check-replica-lag')) {
+             my $replicas_to_skip = $o->get('skip-check-replica-lag');
+             my $filtered_replicas = [];
+             for my $replica (@$replica_lag_cxns) {
                  my $found=0;
-                 for my $slave_to_skip (@$slaves_to_skip) {
-                     my $h_eq_h = $slave->{dsn}->{h} eq $slave_to_skip->{h};
+                 for my $replica_to_skip (@$replicas_to_skip) {
+                     my $h_eq_h = $replica->{dsn}->{h} eq $replica_to_skip->{h};
                      my $p_eq_p;
-                     if (!defined($slave->{dsn}->{P}) && !defined($slave_to_skip->{P}) ) {
+                     if (!defined($replica->{dsn}->{P}) && !defined($replica_to_skip->{P}) ) {
                        PTDEBUG && _d("Both port DSNs are undefined, setting p_eq_p to true");
                        $p_eq_p = 1;
                      } else {
-                        my $skip_slave_port = defined($slave_to_skip->{P})
-                           ? $slave_to_skip->{P} : '3306';
-                        $p_eq_p = $slave->{dsn}->{P} eq $skip_slave_port;
+                        my $skip_replica_port = defined($replica_to_skip->{P})
+                           ? $replica_to_skip->{P} : '3306';
+                        $p_eq_p = $replica->{dsn}->{P} eq $skip_replica_port;
                      }
                      if ($h_eq_h && $p_eq_p) {
                          $found=1;
                      }
                  }
                  if ($found) {
-                    printf("Skipping slave %s\n", $slave->name());
+                    printf("Skipping ${replica_name} %s\n", $replica->name());
                  } else {
-                    push @$filtered_slaves, $slave;
+                    push @$filtered_replicas, $replica;
                 }
              }
-             $slave_lag_cxns = $filtered_slaves;
+             $replica_lag_cxns = $filtered_replicas;
          }
-      }
-
-      # #####################################################################
-      # Possibly check replication slaves and exit.
-      # #####################################################################
-      if ( $o->get('replicate-check') && $o->get('replicate-check-only') ) {
-         PTDEBUG && _d('Will --replicate-check and exit');
-
-         # --plugin hook
-         if ( $plugin && $plugin->can('before_replicate_check') ) {
-            $plugin->before_replicate_check();
-         }
-
-         foreach my $slave ( @$slaves ) {
-            my $diffs = $rc->find_replication_differences(
-               dbh        => $slave->dbh(),
-               repl_table => $repl_table,
-            );
-            PTDEBUG && _d(scalar @$diffs, 'checksum diffs on',
-               $slave->name());
-            $diffs = filter_tables_replicate_check_only($diffs, $o);
-            if ( @$diffs ) {
-               $exit_status |= $PTC_EXIT_STATUS{TABLE_DIFF};
-               if ( $o->get('quiet') < 2 ) {
-                  print_checksum_diffs(
-                     cxn   => $slave,
-                     diffs => $diffs,
-                  );
-               }
-            }
-         }
-
-         # --plugin hook
-         if ( $plugin && $plugin->can('after_replicate_check') ) {
-            $plugin->after_replicate_check();
-         }
-
-         PTDEBUG && _d('Exit status', $exit_status, 'oktorun', $oktorun);
-         return $exit_status;
       }
 
       # #####################################################################
       # Check for replication filters.
       # #####################################################################
       if ( $o->get('check-replication-filters') ) {
-         PTDEBUG && _d("Checking slave replication filters");
+         PTDEBUG && _d("Checking replica replication filters");
          my @all_repl_filters;
-         foreach my $slave ( @$slaves ) {
+         foreach my $replica ( @$replicas ) {
             my $repl_filters = $ms->get_replication_filters(
-               dbh => $slave->dbh(),
+               dbh => $replica->dbh(),
             );
             if ( keys %$repl_filters ) {
                push @all_repl_filters,
-                  { name    => $slave->name(),
+                  { name    => $replica->name(),
                     filters => $repl_filters,
                   };
             }
@@ -10796,10 +10873,10 @@ sub main {
       # Check that the replication table exists, or possibly create it.
       # #####################################################################
       eval {
-         check_repl_table(
-            dbh          => $master_dbh,
+         ($source_crc_name, $source_cnt_name) = check_repl_table(
+            dbh          => $source_dbh,
             repl_table   => $repl_table,
-            slaves       => $slaves,
+            replicas     => $replicas,
             have_time    => $have_time,
             OptionParser => $o,
             TableParser  => $tp,
@@ -10811,22 +10888,63 @@ sub main {
       }
 
       # #####################################################################
-      # Make a ReplicaLagWaiter to help wait for slaves after each chunk.
+      # Possibly check replication replicas and exit.
+      # #####################################################################
+      if ( $o->get('replicate-check') && $o->get('replicate-check-only') ) {
+         PTDEBUG && _d('Will --replicate-check and exit');
+
+         # --plugin hook
+         if ( $plugin && $plugin->can('before_replicate_check') ) {
+            $plugin->before_replicate_check();
+         }
+
+         foreach my $replica ( @$replicas ) {
+            my $diffs = $rc->find_replication_differences(
+               dbh             => $replica->dbh(),
+               repl_table      => $repl_table,
+               source_crc_name => $source_crc_name,
+               source_cnt_name => $source_cnt_name,
+            );
+            PTDEBUG && _d(scalar @$diffs, 'checksum diffs on',
+               $replica->name());
+            $diffs = filter_tables_replicate_check_only($diffs, $o);
+            if ( @$diffs ) {
+               $exit_status |= $PTC_EXIT_STATUS{TABLE_DIFF};
+               if ( $o->get('quiet') < 2 ) {
+                  print_checksum_diffs(
+                     cxn   => $replica,
+                     diffs => $diffs,
+                  );
+               }
+            }
+         }
+
+         # --plugin hook
+         if ( $plugin && $plugin->can('after_replicate_check') ) {
+            $plugin->after_replicate_check();
+         }
+
+         PTDEBUG && _d('Exit status', $exit_status, 'oktorun', $oktorun);
+         return $exit_status;
+      }
+
+      # #####################################################################
+      # Make a ReplicaLagWaiter to help wait for replicas after each chunk.
       # #####################################################################
       my $sleep = sub {
-         # Don't let the master dbh die while waiting for slaves because we
-         # may wait a very long time for slaves.
+         # Don't let the source dbh die while waiting for replicas because we
+         # may wait a very long time for replicas.
 
          # This is called from within the main TABLE loop, so use the
-         # master cxn; do not use $master_dbh.
-         my $dbh = $master_cxn->dbh();
+         # source cxn; do not use $source_dbh.
+         my $dbh = $source_cxn->dbh();
          if ( !$dbh || !$dbh->ping() ) {
-            PTDEBUG && _d('Lost connection to master while waiting for slave lag');
-            eval { $dbh = $master_cxn->connect() };  # connect or die trying
+            PTDEBUG && _d('Lost connection to source while waiting for replica lag');
+            eval { $dbh = $source_cxn->connect() };  # connect or die trying
             if ( $EVAL_ERROR ) {
                $oktorun = 0;  # Fatal error
                chomp $EVAL_ERROR;
-               die "Lost connection to master while waiting for replica lag "
+               die "Lost connection to source while waiting for replica lag "
                   . "($EVAL_ERROR)";
             }
          }
@@ -10836,40 +10954,40 @@ sub main {
       };
 
       my $get_lag;
-      # The plugin is able to override the slavelag check so tools like
+      # The plugin is able to override the replicalag check so tools like
       # pt-heartbeat or other replicators (Tungsten...) can be used to
       # measure replication lag
-      if ( $plugin && $plugin->can('get_slave_lag') ) {
-         $get_lag = $plugin->get_slave_lag(oktorun => \$oktorun);
+      if ( $plugin && $plugin->can('get_replica_lag') ) {
+         $get_lag = $plugin->get_replica_lag(oktorun => \$oktorun);
       } else {
          $get_lag = sub {
             my ($cxn) = @_;
             my $dbh = $cxn->dbh();
             if ( !$dbh || !$dbh->ping() ) {
-               PTDEBUG && _d('Lost connection to slave', $cxn->name(),
-                  'while waiting for slave lag');
+               PTDEBUG && _d('Lost connection to replica', $cxn->name(),
+                  'while waiting for replica lag');
                eval { $dbh = $cxn->connect() };
                if ( $EVAL_ERROR ) {
-                  PTDEBUG && _d('Failed to connect to slave', $cxn->name(),
+                  PTDEBUG && _d('Failed to connect to replica', $cxn->name(),
                      ':', $EVAL_ERROR);
                   return; # keep waiting and trying to reconnect
                }
             }
-            my $slave_lag;
+            my $replica_lag;
             eval {
-               $slave_lag = $ms->get_slave_lag($dbh);
+               $replica_lag = $ms->get_replica_lag($dbh);
             };
             if ( $EVAL_ERROR ) {
-               PTDEBUG && _d('Error getting slave lag', $cxn->name(),
+               PTDEBUG && _d('Error getting replica lag', $cxn->name(),
                   ':', $EVAL_ERROR);
                return; # keep waiting and trying to reconnect
             }
-            return $slave_lag;
+            return $replica_lag;
          };
       }
 
       $replica_lag = new ReplicaLagWaiter(
-         slaves   => $slave_lag_cxns,
+         replicas => $replica_lag_cxns,
          max_lag  => $o->get('max-lag'),
          oktorun  => sub { return $oktorun && $have_time->(); },
          get_lag  => $get_lag,
@@ -10880,7 +10998,7 @@ sub main {
       my $get_status;
       {
          my $sql = "SHOW GLOBAL STATUS LIKE ?";
-         my $sth = $master_cxn->dbh()->prepare($sql);
+         my $sth = $source_cxn->dbh()->prepare($sql);
 
          $get_status = sub {
             my ($var) = @_;
@@ -10910,7 +11028,7 @@ sub main {
 
       if ( $o->get('progress') ) {
          $replica_lag_pr = new Progress(
-            jobsize => scalar @$slaves,
+            jobsize => scalar @$replicas,
             spec    => $o->get('progress'),
             name    => "Waiting for replicas to catch up",  # not used
          );
@@ -10923,15 +11041,15 @@ sub main {
       }
 
       # #####################################################################
-      # Prepare statement handles to update the repl table on the master.
+      # Prepare statement handles to update the repl table on the source.
       # #####################################################################
-      $fetch_sth = $master_dbh->prepare(
+      $fetch_sth = $source_dbh->prepare(
          "SELECT this_crc, this_cnt FROM $repl_table "
          . "WHERE db = ? AND tbl = ? AND chunk = ?");
-      $update_sth = $master_dbh->prepare(
-         "UPDATE $repl_table SET chunk_time = ?, master_crc = ?, master_cnt = ? "
+      $update_sth = $source_dbh->prepare(
+         "UPDATE $repl_table SET chunk_time = ?, ${source_crc_name} = ?, ${source_cnt_name} = ? "
          . "WHERE db = ? AND tbl = ? AND chunk = ?");
-      $delete_sth = $master_dbh->prepare(
+      $delete_sth = $source_dbh->prepare(
          "DELETE FROM $repl_table WHERE db = ? AND tbl = ?");
    } # !$o->get('explain')
 
@@ -10942,8 +11060,8 @@ sub main {
       VersionCheck::version_check(
          force     => $o->got('version-check'),
          instances => [
-            { dbh => $master_dbh, dsn => $master_dsn },
-            map({ +{ dbh => $_->dbh(), dsn => $_->dsn() } } @$slaves)
+            { dbh => $source_dbh, dsn => $source_dsn },
+            map({ +{ dbh => $_->dbh(), dsn => $_->dsn() } } @$replicas)
          ],
       );
    }
@@ -10951,12 +11069,12 @@ sub main {
    # ########################################################################
    # Checksum args and the DMS part of the checksum query for each table.
    # ########################################################################
-   my %crc_args     = $rc->get_crc_args(dbh => $master_dbh);
+   my %crc_args     = $rc->get_crc_args(dbh => $source_dbh);
    my $checksum_dml = "REPLACE INTO $repl_table "
                     . "(db, tbl, chunk, chunk_index,"
                     . " lower_boundary, upper_boundary, this_cnt, this_crc) "
                     . "SELECT"
-                    . ($cluster->is_cluster_node($master_cxn) ? ' /*!99997*/' : '')
+                    . ($cluster->is_cluster_node($source_cxn) ? ' /*!99997*/' : '')
                     . " ?, ?, ?, ?, ?, ?,";
    my $past_cols    = " COUNT(*), '0'";
 
@@ -10966,13 +11084,14 @@ sub main {
    my $last_chunk;
    if ( $o->get('resume') ) {
       $last_chunk = last_chunk(
-         dbh        => $master_dbh,
-         repl_table => $repl_table,
+         dbh             => $source_dbh,
+         repl_table      => $repl_table,
+         source_cnt_name => $source_cnt_name,
       );
    }
 
    my $schema_iter = new SchemaIterator(
-      dbh          => $master_dbh,
+      dbh          => $source_dbh,
       resume       => $last_chunk ? $q->quote(@{$last_chunk}{qw(db tbl)})
                                   : "",
       OptionParser => $o,
@@ -11050,10 +11169,10 @@ sub main {
             $last_chunk = undef;
          }
 
-         if ( $o->get('check-slave-tables') ) {
+         if ( $o->get('check-replica-tables') ) {
             eval {
-               check_slave_tables(
-                  slaves        => $slaves,
+               check_replica_tables(
+                  replicas        => $replicas,
                   db            => $tbl->{db},
                   tbl           => $tbl->{tbl},
                   checksum_cols => $tbl->{checksum_cols},
@@ -11068,7 +11187,7 @@ sub main {
                   . "problems on these replicas:\n"
                   . $EVAL_ERROR
                   . "This can break replication.  If you understand the risks, "
-                  . "specify --no-check-slave-tables to disable this check.\n";
+                  . "specify --no-check-replica-tables to disable this check.\n";
                warn ts($msg);
                $exit_status |= $PTC_EXIT_STATUS{SKIP_TABLE};
                $oktonibble = 0;
@@ -11096,9 +11215,9 @@ sub main {
          else {
             if ( $nibble_iter->one_nibble() ) {
                my @too_large;
-               SLAVE:
-               foreach my $slave ( @$slaves ) {
-                  PTDEBUG && _d('Getting table row estimate on', $slave->name());
+               REPLICA:
+               foreach my $replica ( @$replicas ) {
+                  PTDEBUG && _d('Getting table row estimate on', $replica->name());
                   my $have_warned = 0;
                   while ( $oktorun && $have_time->() )  {
                      my $n_rows;
@@ -11107,21 +11226,21 @@ sub main {
                         # probably best to have 1 code path to determine if
                         # a given table is oversized on a given host.
                         ($n_rows) = NibbleIterator::get_row_estimate(
-                           Cxn   => $slave,
+                           Cxn   => $replica,
                            tbl   => $tbl,
                            where => $o->get('where'),
                         );
                      };
                      if ( my $e = $EVAL_ERROR ) {
-                        if ( $slave->lost_connection($e) ) {
+                        if ( $replica->lost_connection($e) ) {
                            PTDEBUG && _d($e);
-                           eval { $slave->connect() };
+                           eval { $replica->connect() };
                            if ( $EVAL_ERROR ) {
-                              PTDEBUG && _d('Failed to connect to slave', $slave->name(),
+                              PTDEBUG && _d('Failed to connect to replica', $replica->name(),
                                  ':', $EVAL_ERROR);
                               if ( !$have_warned && $o->get('quiet') < 2 ) {
                                  my $msg = "Trying to connect to replica "
-                                    . $slave->name() . " to get row count of"
+                                    . $replica->name() . " to get row count of"
                                     . " table $tbl->{db}.$tbl->{tbl}...\n";
                                  warn ts($msg);
                                  $have_warned = 1;
@@ -11132,24 +11251,24 @@ sub main {
                         }
                         die "Error getting row count estimate of table"
                            . " $tbl->{db}.$tbl->{tbl} on replica "
-                           . $slave->name() . ": $e";
+                           . $replica->name() . ": $e";
                      }
-                     PTDEBUG && _d('Table on', $slave->name(), 'has', $n_rows, 'rows');
-                     my $slave_skip_tolerance = $o->get('slave-skip-tolerance') || 1;
+                     PTDEBUG && _d('Table on', $replica->name(), 'has', $n_rows, 'rows');
+                     my $replica_skip_tolerance = $o->get('replica-skip-tolerance') || 1;
                      if ( $n_rows
-                          && $n_rows > ($tbl->{chunk_size} * $chunk_size_limit) * $slave_skip_tolerance )
+                          && $n_rows > ($tbl->{chunk_size} * $chunk_size_limit) * $replica_skip_tolerance )
                      {
-                        PTDEBUG && _d('Table too large on', $slave->name());
-                        push @too_large, [$slave->name(), $n_rows || 0];
+                        PTDEBUG && _d('Table too large on', $replica->name());
+                        push @too_large, [$replica->name(), $n_rows || 0];
                      }
-                     next SLAVE;
+                     next REPLICA;
                   }
                }
                if ( @too_large ) {
                   if ( $o->get('quiet') < 2 ) {
                      my $msg
                         = "Skipping table $tbl->{db}.$tbl->{tbl} because"
-                        . " on the master it would be checksummed in one chunk"
+                        . " on the source it would be checksummed in one chunk"
                         . " but on these replicas it has too many rows:\n";
                      foreach my $info ( @too_large ) {
                         $msg .= "  $info->[1] rows on $info->[0]\n";
@@ -11195,7 +11314,7 @@ sub main {
 
             if ( $oktonibble && $o->get('empty-replicate-table') ) {
                use_repl_db(
-                  dbh          => $master_cxn->dbh(),
+                  dbh          => $source_cxn->dbh(),
                   repl_table   => $repl_table,
                   OptionParser => $o,
                   Quoter       => $q,
@@ -11207,7 +11326,7 @@ sub main {
             # USE the correct db while checksumming this table.  The "correct"
             # db is a complicated subject; see sub for comments.
             use_repl_db(
-               dbh          => $master_cxn->dbh(),
+               dbh          => $source_cxn->dbh(),
                tbl          => $tbl, # XXX working on this table
                repl_table   => $repl_table,
                OptionParser => $o,
@@ -11344,7 +11463,7 @@ sub main {
          # Max chunk number that worked.  This may be less than the total
          # number of chunks if, for example, chunk 16 of 16 times out, but
          # chunk 15 worked.  The max chunk is used for checking for diffs
-         # on the slaves, in the done callback.
+         # on the replicas, in the done callback.
          $tbl->{max_chunk} = $chunk;
 
          # Fetch the checksum that we just executed from the replicate table.
@@ -11353,13 +11472,13 @@ sub main {
 
          $tbl->{checksum_results}->{n_rows} += $cnt || 0;
 
-         # We're working on the master, so update the checksum's master_cnt
-         # and master_crc.
+         # We're working on the source, so update the checksum's source_cnt
+         # and source_crc.
          $update_sth->execute(
             # UPDATE repl_table SET
             sprintf('%.6f', $tbl->{nibble_time}), # chunk_time
-            $crc,                                 # master_crc
-            $cnt,                                 # master_cnt
+            $crc,                                 # source_crc
+            $cnt,                                 # source_cnt
             # WHERE
             $tbl->{db},
             $tbl->{tbl},
@@ -11417,7 +11536,7 @@ sub main {
             }
          }
 
-         # Wait forever for slaves to catch up.
+         # Wait forever for replicas to catch up.
          $replica_lag_pr->start() if $replica_lag_pr;
          $replica_lag->wait(Progress => $replica_lag_pr);
 
@@ -11436,10 +11555,10 @@ sub main {
          # Don't need to do anything here if we're just --explain'ing.
          return if $o->get('explain');
 
-         # Wait for all slaves to run all checksum chunks,
+         # Wait for all replicas to run all checksum chunks,
          # then check for differences.
-         if ( $max_chunk && $o->get('replicate-check') && scalar @$slaves ) {
-            PTDEBUG && _d('Checking slave diffs');
+         if ( $max_chunk && $o->get('replicate-check') && scalar @$replicas ) {
+            PTDEBUG && _d('Checking replica diffs');
 
             my $check_pr;
             if ( $o->get('progress') ) {
@@ -11451,34 +11570,37 @@ sub main {
             }
 
             # Wait for the last checksum of this table to replicate
-            # to each slave.
+            # to each replica.
             # MySQL 8+ replication is slower than 5.7 and the old wait_for_last_checksum alone
-            # was failing. The new wait_for_slaves checks that Read_Master_Log_Pos on slaves is
-            # greater or equal Position in the master
+            # was failing. The new wait_for_replicas checks that Read_Source_Log_Pos on replicas is
+            # greater or equal Position in the source
             if (!$args{Cxn}->is_cluster_node()) {
-                wait_for_slaves(master_dbh => $args{Cxn}->dbh(), master_slave => $ms, slaves => $slaves);
+                wait_for_replicas(source_dbh => $args{Cxn}->dbh(), source_replica => $ms, replicas => $replicas);
             }
             wait_for_last_checksum(
-               tbl          => $tbl,
-               repl_table   => $repl_table,
-               slaves       => $slaves,
-               max_chunk    => $max_chunk,
-               check_pr     => $check_pr,
-               have_time    => $have_time,
-               OptionParser => $o,
+               tbl             => $tbl,
+               repl_table      => $repl_table,
+               replicas        => $replicas,
+               max_chunk       => $max_chunk,
+               check_pr        => $check_pr,
+               have_time       => $have_time,
+               OptionParser    => $o,
+               source_crc_name => $source_crc_name,
             );
 
-            # Check each slave for checksum diffs.
+            # Check each replica for checksum diffs.
             my %diff_chunks;
-            foreach my $slave ( @$slaves ) {
+            foreach my $replica ( @$replicas ) {
                eval {
                   my $diffs = $rc->find_replication_differences(
-                     dbh        => $slave->dbh(),
+                     dbh        => $replica->dbh(),
                      repl_table => $repl_table,
                      where      => "db='$tbl->{db}' AND tbl='$tbl->{tbl}'",
+                     source_crc_name => $source_crc_name,
+                     source_cnt_name => $source_cnt_name,
                   );
                   PTDEBUG && _d(scalar @$diffs, 'checksum diffs on',
-                     $slave->name());
+                     $replica->name());
                   # Save unique chunks that differ.
                   # https://bugs.launchpad.net/percona-toolkit/+bug/1030031
                   if ( scalar @$diffs ) {
@@ -11499,7 +11621,7 @@ sub main {
                if ($EVAL_ERROR) {
                   if ( $o->get('quiet') < 2 ) {
                      warn ts("Error checking for checksum differences of table "
-                        . "$tbl->{db}.$tbl->{tbl} on replica " . $slave->name()
+                        . "$tbl->{db}.$tbl->{tbl} on replica " . $replica->name()
                         . ": $EVAL_ERROR\n"
                         . "Check that the replica is running and has the "
                         . "replicate table $repl_table.\n");
@@ -11529,8 +11651,8 @@ sub main {
    # --plugin hook
    if ( $plugin && $plugin->can('init') ) {
       $plugin->init(
-         slaves         => $slaves,
-         slave_lag_cxns => $slave_lag_cxns,
+         replicas         => $replicas,
+         replica_lag_cxns => $replica_lag_cxns,
          repl_table     => $repl_table,
       );
    }
@@ -11564,7 +11686,7 @@ sub main {
          # one chunk.
          my $checksum_cols = eval {
             $rc->make_chunk_checksum(
-               dbh => $master_cxn->dbh(),
+               dbh => $source_cxn->dbh(),
                tbl => $tbl,
                %crc_args
             );
@@ -11580,7 +11702,7 @@ sub main {
          my $nibble_iter;
          eval {
             $nibble_iter = new OobNibbleIterator(
-               Cxn                => $master_cxn,
+               Cxn                => $source_cxn,
                tbl                => $tbl,
                chunk_size         => $tbl->{chunk_size},
                chunk_index        => $o->get('chunk-index'),
@@ -11685,14 +11807,14 @@ sub main {
    # Restore origin QRT pligin state
    if ($o->get('disable-qrt-plugin')) {
        eval {
-           if ($original_qrt_plugin_master_status) {
-               PTDEBUG && _d("Restoring qrt plugin state on master server");
-               $master_dbh->do("SET GLOBAL query_response_time_stats = $original_qrt_plugin_master_status->[0]");
+           if ($original_qrt_plugin_source_status) {
+               PTDEBUG && _d("Restoring qrt plugin state on source server");
+               $source_dbh->do("SET GLOBAL query_response_time_stats = $original_qrt_plugin_source_status->[0]");
            }
-           for my $slave (@$slaves) {
-               if ($slave->{qrt_plugin_status}) {
-                   PTDEBUG && _d("Restoring qrt plugin state on slave ".$slave->{dsn_name});
-                   $slave->{dbh}->do("SET GLOBAL query_response_time_stats = $slave->{qrt_plugin_status}");
+           for my $replica (@$replicas) {
+               if ($replica->{qrt_plugin_status}) {
+                   PTDEBUG && _d("Restoring qrt plugin state on replica ".$replica->{dsn_name});
+                   $replica->{dbh}->do("SET GLOBAL query_response_time_stats = $replica->{qrt_plugin_status}");
                }
            }
        };
@@ -12034,12 +12156,12 @@ sub filter_tables_replicate_check_only {
 
 sub check_repl_table {
    my ( %args ) = @_;
-   my @required_args = qw(dbh repl_table slaves have_time
+   my @required_args = qw(dbh repl_table replicas have_time
                           OptionParser TableParser Quoter);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $repl_table, $slaves, $have_time, $o, $tp, $q) = @args{@required_args};
+   my ($dbh, $repl_table, $replicas, $have_time, $o, $tp, $q) = @args{@required_args};
 
    PTDEBUG && _d('Checking --replicate table', $repl_table);
 
@@ -12060,7 +12182,7 @@ sub check_repl_table {
 
    if ( $o->get('create-replicate-table') ) {
       # Even if the db already exists, do this in case it does not exist
-      # on a slave.
+      # on a replica.
       my $create_db_sql
          = "CREATE DATABASE IF NOT EXISTS "
          . $q->quote($db)
@@ -12075,26 +12197,26 @@ sub check_repl_table {
          # having privs to create it, but they still have privs to use it.
 
          if ( @db_exists ) {
-            # Repl db already exists on the master, so check if it's also
-            # on all slaves.  If not, and given that creating it failed,
-            # we'll die because we can't be sure if it's ok on all slaves.
+            # Repl db already exists on the source, so check if it's also
+            # on all replicas.  If not, and given that creating it failed,
+            # we'll die because we can't be sure if it's ok on all replicas.
             # The user can verify and disable this check if it's ok.
             my $e = $EVAL_ERROR;  # CREATE DATABASE error
-            my @slaves_missing_db;
-            foreach my $slave ( @$slaves ) {
-               PTDEBUG && _d($show_db_sql, 'on', $slave->name());
-               my @db_exists_in_slave
-                  = $slave->dbh->selectrow_array($show_db_sql);
-               if ( !@db_exists_in_slave ) {
-                  push @slaves_missing_db, $slave;
+            my @replicas_missing_db;
+            foreach my $replica ( @$replicas ) {
+               PTDEBUG && _d($show_db_sql, 'on', $replica->name());
+               my @db_exists_in_replica
+                  = $replica->dbh->selectrow_array($show_db_sql);
+               if ( !@db_exists_in_replica ) {
+                  push @replicas_missing_db, $replica;
                }
             }
-            if ( @slaves_missing_db ) {
+            if ( @replicas_missing_db ) {
                warn $e;  # CREATE DATABASE error
-               die "The --replicate database $db exists on the master but "
-                 . "$create_db_sql on the master failed (see the error above) "
+               die "The --replicate database $db exists on the source but "
+                 . "$create_db_sql on the source failed (see the error above) "
                  . "and the database does not exist on these replicas:\n"
-                 . join("\n", map { "  " . $_->name() } @slaves_missing_db)
+                 . join("\n", map { "  " . $_->name() } @replicas_missing_db)
                  . "\nThis can break replication.  If you understand "
                  . "the risks, specify --no-create-replicate-table to disable "
                  . "this check.\n";
@@ -12146,16 +12268,16 @@ sub check_repl_table {
          # having privs to create it, but they still have privs to use it.
 
          if ( $tbl_exists ) {
-            # Repl table already exists on the master, so check if it's also
-            # on all slaves.  If not, and given that creating it failed,
-            # we'll die because we can't be sure if it's ok on all slaves.
+            # Repl table already exists on the source, so check if it's also
+            # on all replicas.  If not, and given that creating it failed,
+            # we'll die because we can't be sure if it's ok on all replicas.
             # The user can verify and disable this check if it's ok.
             my $e          = $EVAL_ERROR;  # CREATE TABLE error
             my $ddl        = $tp->get_create_table($dbh, $db, $tbl);
             my $tbl_struct = $tp->parse($ddl);
             eval {
-               check_slave_tables(
-                  slaves        => $slaves,
+               check_replica_tables(
+                  replicas        => $replicas,
                   db            => $db,
                   tbl           => $tbl,
                   checksum_cols => $tbl_struct->{cols},
@@ -12166,7 +12288,7 @@ sub check_repl_table {
             };
             if ( $EVAL_ERROR ) {
                warn $e;  # CREATE TABLE error
-               die "The --replicate table $repl_table exists on the master but "
+               die "The --replicate table $repl_table exists on the source but "
                  . "but it has problems on these replicas:\n"
                  . $EVAL_ERROR
                  . "\nThis can break replication.  If you understand "
@@ -12182,14 +12304,14 @@ sub check_repl_table {
       }
    }
 
-   # Check and wait for the repl table to appear on all slaves.
+   # Check and wait for the repl table to appear on all replicas.
    # https://bugs.launchpad.net/percona-toolkit/+bug/1008778
-   if ( scalar @$slaves ) {
+   if ( scalar @$replicas ) {
       my $waiting_for;
       my $pr;
       if ( $o->get('progress') ) {
          $pr = new Progress(
-            jobsize  => scalar @$slaves,
+            jobsize  => scalar @$replicas,
             spec     => $o->get('progress'),
             callback => sub {
                print STDERR "Waiting for the --replicate table to replicate to "
@@ -12199,19 +12321,19 @@ sub check_repl_table {
          $pr->start();
       }
 
-      foreach my $slave ( @$slaves ) {
-         PTDEBUG && _d('Checking if', $slave->name(), 'has repl table');
-         $waiting_for = $slave;
-         my $slave_has_repl_table = $tp->check_table(
-               dbh => $slave->dbh(),
+      foreach my $replica ( @$replicas ) {
+         PTDEBUG && _d('Checking if', $replica->name(), 'has repl table');
+         $waiting_for = $replica;
+         my $replica_has_repl_table = $tp->check_table(
+               dbh => $replica->dbh(),
                db  => $db,
                tbl => $tbl,
          );
-         while ( !$slave_has_repl_table ) {
+         while ( !$replica_has_repl_table ) {
             $pr->update(sub { return 0; }) if $pr;
             sleep 0.5;
-            $slave_has_repl_table = $tp->check_table(
-               dbh => $slave->dbh(),
+            $replica_has_repl_table = $tp->check_table(
+               dbh => $replica->dbh(),
                db  => $db,
                tbl => $tbl,
             );
@@ -12219,9 +12341,24 @@ sub check_repl_table {
       }
    }
 
+   my $create_table = $tp->get_create_table( $dbh, $db, $tbl );
+   my $source_crc_name = 'source_crc';
+   my $source_cnt_name = 'source_cnt';
+
+   if ( $create_table =~ /master_crc/si
+      || $create_table =~ /master_cnt/si )
+   {
+      warn "The current checksum table uses deprecated column names. Support for these names "
+      . "will be occasionally removed. Please update the table definition with command:\n"
+      . "ALTER TABLE `$db`.`$tbl` RENAME COLUMN master_crc TO source_crc, "
+      . "RENAME COLUMN master_cnt TO source_cnt;\n";
+
+      $source_crc_name = 'master_crc';
+      $source_cnt_name = 'master_cnt';
+   }
+
    if ( $o->get('binary-index') ) {
       PTDEBUG && _d('--binary-index : checking if replicate table has binary type columns');
-      my $create_table = $tp->get_create_table( $dbh, $db, $tbl );
       if (  $create_table !~ /lower_boundary`?\s+BLOB/si
          || $create_table !~ /upper_boundary`?\s+BLOB/si )
       {
@@ -12231,73 +12368,73 @@ sub check_repl_table {
       }
    }
 
-   return;  # success, repl table is ready to go
+   return ($source_crc_name, $source_cnt_name);  # success, repl table is ready to go
 }
 
-# Check that db.tbl exists on all slaves and has the checksum cols,
+# Check that db.tbl exists on all replicas and has the checksum cols,
 # else when we check for diffs we'll break replication by selecting
 # a nonexistent column.
-sub check_slave_tables {
+sub check_replica_tables {
    my (%args) = @_;
-   my @required_args = qw(slaves db tbl checksum_cols have_time TableParser OptionParser);
+   my @required_args = qw(replicas db tbl checksum_cols have_time TableParser OptionParser);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($slaves, $db, $tbl, $checksum_cols, $have_time, $tp, $o) = @args{@required_args};
+   my ($replicas, $db, $tbl, $checksum_cols, $have_time, $tp, $o) = @args{@required_args};
 
    my @problems;
-   SLAVE:
-   foreach my $slave ( @$slaves ) {
-      my $slave_has_table = 0;
+   REPLICA:
+   foreach my $replica ( @$replicas ) {
+      my $replica_has_table = 0;
       my $have_warned     = 0;
       while ( $oktorun && $have_time->() )  {
          eval {
             # TableParser::check_table() does not die on error, it sets
             # check_table_error and return 0.
-            $slave_has_table = $tp->check_table(
-                  dbh => $slave->dbh,
+            $replica_has_table = $tp->check_table(
+                  dbh => $replica->dbh,
                   db  => $db,
                   tbl => $tbl,
             );
             die $tp->{check_table_error} if defined $tp->{check_table_error};
-            if ( !$slave_has_table ) {
+            if ( !$replica_has_table ) {
                push @problems, "Table $db.$tbl does not exist on replica "
-                  . $slave->name;
+                  . $replica->name;
             }
             else {
                # TableParser::get_create_table() will die on error.
-               my $slave_tbl_struct = $tp->parse(
-                  $tp->get_create_table($slave->dbh, $db, $tbl)
+               my $replica_tbl_struct = $tp->parse(
+                  $tp->get_create_table($replica->dbh, $db, $tbl)
                );
-               my @slave_missing_cols;
+               my @replica_missing_cols;
                foreach my $col ( @$checksum_cols ) {
-                  if ( !$slave_tbl_struct->{is_col}->{$col} ) {
-                     push @slave_missing_cols, $col;
+                  if ( !$replica_tbl_struct->{is_col}->{$col} ) {
+                     push @replica_missing_cols, $col;
                   }
                }
-               if ( @slave_missing_cols ) {
-                  push @problems, "Table $db.$tbl on replica " . $slave->name
+               if ( @replica_missing_cols ) {
+                  push @problems, "Table $db.$tbl on replica " . $replica->name
                      . " is missing these columns: "
-                     . join(", ", @slave_missing_cols);
+                     . join(", ", @replica_missing_cols);
                }
             }
          };
          if ( my $e = $EVAL_ERROR ) {
             PTDEBUG && _d($e);
-            if ( !$slave->lost_connection($e) ) {
+            if ( !$replica->lost_connection($e) ) {
                push @problems, "Error checking table $db.$tbl on replica "
-                  . $slave->name . ": $e";
-               next SLAVE;
+                  . $replica->name . ": $e";
+               next REPLICA;
             }
 
-            # Lost connection to slave. Reconnect and try again.
-            eval { $slave->connect() };
+            # Lost connection to replica. Reconnect and try again.
+            eval { $replica->connect() };
             if ( $EVAL_ERROR ) {
-               PTDEBUG && _d('Failed to connect to slave', $slave->name(),
+               PTDEBUG && _d('Failed to connect to replica', $replica->name(),
                   ':', $EVAL_ERROR);
                if ( !$have_warned && $o->get('quiet') < 2 ) {
                   my $msg = "Trying to connect to replica "
-                     . $slave->name() . " to check $db.$tbl...\n";
+                     . $replica->name() . " to check $db.$tbl...\n";
                   warn ts($msg);
                   $have_warned = 1;
                }
@@ -12306,11 +12443,11 @@ sub check_slave_tables {
             next; # try again
          } # eval error
 
-         # No error, so we successfully queried this slave.
-         next SLAVE;
+         # No error, so we successfully queried this replica.
+         next REPLICA;
 
       } # while oktorun && have_time
-   } # foreach slave
+   } # foreach replica
 
    die join("\n", @problems) . "\n" if @problems;
 
@@ -12469,15 +12606,16 @@ sub explain_statement {
 
 sub last_chunk {
    my (%args) = @_;
-   my @required_args = qw(dbh repl_table);
+   my @required_args = qw(dbh repl_table source_cnt_name);
+   my $source_name = $args{source_name} ? $args{source_name} : 'source';
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $repl_table, $q) = @args{@required_args};
+   my ($dbh, $repl_table, $source_cnt_name) = @args{@required_args};
    PTDEBUG && _d('Getting last chunk for --resume');
 
    my $sql = "SELECT * FROM $repl_table FORCE INDEX (ts_db_tbl) "
-           . "WHERE master_cnt IS NOT NULL "
+           . "WHERE ${source_cnt_name} IS NOT NULL "
            . "ORDER BY ts DESC, db DESC, tbl DESC LIMIT 1";
    PTDEBUG && _d($sql);
    my $sth = $dbh->prepare($sql);
@@ -12531,75 +12669,75 @@ sub have_more_chunks {
    return 1; # more chunks
 }
 
-sub wait_for_slaves {
+sub wait_for_replicas {
    my (%args) = @_;
-   my @required_args = qw(master_dbh master_slave slaves);
+   my @required_args = qw(source_dbh source_replica replicas);
    foreach my $arg ( @required_args ) {
        die "I need a $arg argument" unless $args{$arg};
    }
-   my ($master_dbh, $ms, $slaves) = @args{@required_args};
+   my ($source_dbh, $ms, $replicas) = @args{@required_args};
 
-   foreach my $slave ( @$slaves ) {
-       my $dp = $slave->{DSNParser};
-       my $mdbh = $dp->get_dbh($dp->get_cxn_params($slave->{parent}));
-       my $master_status = $ms->get_master_status($mdbh);
-       $ms->wait_for_master(master_status => $master_status, slave_dbh => $slave->dbh());
+   foreach my $replica ( @$replicas ) {
+       my $dp = $replica->{DSNParser};
+       my $mdbh = $dp->get_dbh($dp->get_cxn_params($replica->{parent}));
+       my $source_status = $ms->get_source_status($mdbh);
+       $ms->wait_for_source(source_status => $source_status, replica_dbh => $replica->dbh());
        $dp->disconnect($mdbh);
    }
 }
 
 sub wait_for_last_checksum {
    my (%args) = @_;
-   my @required_args = qw(tbl repl_table slaves max_chunk have_time OptionParser);
+   my @required_args = qw(tbl repl_table replicas max_chunk have_time OptionParser source_crc_name);
    foreach my $arg ( @required_args ) {
       die "I need a $arg argument" unless defined $args{$arg};
    }
-   my ($tbl, $repl_table, $slaves, $max_chunk, $have_time, $o) = @args{@required_args};
+   my ($tbl, $repl_table, $replicas, $max_chunk, $have_time, $o, $source_crc_name) = @args{@required_args};
    my $check_pr = $args{check_pr};
 
-   # Requiring "AND master_crc IS NOT NULL" avoids a race condition
+   # Requiring "AND source_crc IS NOT NULL" avoids a race condition
    # when the system is fast but replication is slow.  In such cases,
-   # we can select on the slave before the update for $update_sth
+   # we can select on the replica before the update for $update_sth
    # replicates; this causes a false-positive diff.
    my $sql = "SELECT MAX(chunk) FROM $repl_table "
            . "WHERE db='$tbl->{db}' AND tbl='$tbl->{tbl}' "
-           . "AND master_crc IS NOT NULL";
+           . "AND ${source_crc_name} IS NOT NULL";
    PTDEBUG && _d($sql);
 
    my $sleep_time = 0;
-   my $n_slaves   = scalar @$slaves - 1;
+   my $n_replicas   = scalar @$replicas - 1;
    my @chunks;
-   my %skip_slave;
+   my %skip_replica;
    my %have_warned;
    my $checked_all;
    while ( $oktorun && $have_time->() && (!$checked_all || (($chunks[0] || 0) < $max_chunk)) ) {
       @chunks      = ();
       $checked_all = 1;
-      for my $i ( 0..$n_slaves ) {
-         my $slave = $slaves->[$i];
-         if ( $skip_slave{$i} ) {
-            PTDEBUG && _d('Skipping slave', $slave->name(),
+      for my $i ( 0..$n_replicas ) {
+         my $replica = $replicas->[$i];
+         if ( $skip_replica{$i} ) {
+            PTDEBUG && _d('Skipping replica', $replica->name(),
                'due to previous error it caused');
             next;
          }
-         PTDEBUG && _d('Getting last checksum on', $slave->name());
+         PTDEBUG && _d('Getting last checksum on', $replica->name());
          eval {
-            my ($chunk) = $slave->dbh()->selectrow_array($sql);
-            PTDEBUG && _d($slave->name(), 'max chunk:', $chunk);
+            my ($chunk) = $replica->dbh()->selectrow_array($sql);
+            PTDEBUG && _d($replica->name(), 'max chunk:', $chunk);
             push @chunks, $chunk || 0;
          };
          if (my $e = $EVAL_ERROR) {
             PTDEBUG && _d($e);
-            if ( $slave->lost_connection($e) ) {
+            if ( $replica->lost_connection($e) ) {
                if ( !$have_warned{$i} && $o->get('quiet') < 2 ) {
-                  warn ts("Lost connection to " .  $slave->name() . " while "
+                  warn ts("Lost connection to " .  $replica->name() . " while "
                      . "waiting for the last checksum of table "
                      . "$tbl->{db}.$tbl->{tbl} to replicate. Will reconnect "
                      . "and try again. No more warnings for this replica will "
                      . "be printed.\n");
                   $have_warned{$i}++;
                }
-               eval { $slave->connect() };
+               eval { $replica->connect() };
                if ( $EVAL_ERROR ) {
                   PTDEBUG && _d($EVAL_ERROR);
                   sleep 1; # wait between failed reconnect attempts
@@ -12610,20 +12748,20 @@ sub wait_for_last_checksum {
                if ( $o->get('quiet') < 2 ) {
                   warn ts("Error waiting for the last checksum of table "
                         . "$tbl->{db}.$tbl->{tbl} to replicate to "
-                        . "replica " . $slave->name() . ": $e\n"
+                        . "replica " . $replica->name() . ": $e\n"
                         . "Check that the replica is running and has the "
                         . "replicate table $repl_table.  Checking the replica "
                         . "for checksum differences will probably cause "
                         . "another error.\n");
                }
                $tbl->{checksum_results}->{errors}++;
-               $skip_slave{$i} = 1;
+               $skip_replica{$i} = 1;
             }
             next;
          }
       }
 
-      # If we have no chunks, which can happen if the slaves
+      # If we have no chunks, which can happen if the replicas
       # were skipped due to errors, then @chunks will be empty
       # and nothing of the following applies. In fact, it
       # leads to an uninit warning because of $chunks[0]; See
@@ -12636,7 +12774,7 @@ sub wait_for_last_checksum {
          }
 
          # We shouldn't wait long here because we already waited
-         # for all slaves to catchup at least until --max-lag.
+         # for all replicas to catchup at least until --max-lag.
          $sleep_time += 0.25 if $sleep_time <= $o->get('max-lag');
          PTDEBUG && _d('Sleep', $sleep_time, 'waiting for chunks');
          sleep $sleep_time;
@@ -12700,12 +12838,12 @@ pt-table-checksum - Verify MySQL replication integrity.
 Usage: pt-table-checksum [OPTIONS] [DSN]
 
 pt-table-checksum performs an online replication consistency check by executing
-checksum queries on the master, which produces different results on replicas
-that are inconsistent with the master.  The optional DSN specifies the master
-host.  The tool's L<"EXIT STATUS"> is non-zero if any differences are found,
+checksum queries on the replication source, which produces different results on
+replicas that are inconsistent with the source.  The optional DSN specifies the
+source host.  The tool's L<"EXIT STATUS"> is non-zero if any differences are found,
 or if any warnings or errors occur.
 
-The following command will connect to the replication master on localhost,
+The following command will connect to the replication source on localhost,
 checksum every table, and report the results on every detected replica:
 
    pt-table-checksum
@@ -12797,8 +12935,8 @@ than the desired number of rows. You can configure the sensitivity of this
 safeguard with the L<"--chunk-size-limit"> option. If a table will be
 checksummed in a single chunk because it has a small number of rows, then
 pt-table-checksum additionally verifies that the table isn't oversized on
-replicas.  This avoids the following scenario: a table is empty on the master
-but is very large on a replica, and is checksummed in a single large query,
+replicas.  This avoids the following scenario: a table is empty on the replication
+source but is very large on a replica, and is checksummed in a single large query,
 which causes a very long delay in replication.
 
 There are several other safeguards. For example, pt-table-checksum sets its
@@ -12830,27 +12968,27 @@ exit.  You can resume it as usual afterwards.
 After pt-table-checksum finishes checksumming all of the chunks in a table, it
 pauses and waits for all detected replicas to finish executing the checksum
 queries.  Once that is finished, it checks all of the replicas to see if they
-have the same data as the master, and then prints a line of output with the
+have the same data as the source, and then prints a line of output with the
 results.  You can see a sample of its output later in this documentation.
 
 The tool prints progress indicators during time-consuming operations.  It prints
 a progress indicator as each table is checksummed.  The progress is computed by
 the estimated number of rows in the table. It will also print a progress report
 when it pauses to wait for replication to catch up, and when it is waiting to
-check replicas for differences from the master.  You can make the output less
+check replicas for differences from the source.  You can make the output less
 verbose with the L<"--quiet"> option.
 
 If you wish, you can query the checksum tables manually to get a report of which
-tables and chunks have differences from the master.  The following query will
+tables and chunks have differences from the source.  The following query will
 report every database and table with differences, along with a summary of the
 number of chunks and rows possibly affected:
 
   SELECT db, tbl, SUM(this_cnt) AS total_rows, COUNT(*) AS chunks
   FROM percona.checksums
   WHERE (
-   master_cnt <> this_cnt
-   OR master_crc <> this_crc
-   OR ISNULL(master_crc) <> ISNULL(this_crc))
+   source_cnt <> this_cnt
+   OR source_crc <> this_crc
+   OR ISNULL(source_crc) <> ISNULL(this_crc))
   GROUP BY db, tbl;
 
 The table referenced in that query is the checksum table, where the checksums
@@ -12875,7 +13013,7 @@ collisions. On the other hand, C<CRC32> algorithm is faster and less CPU-intensi
 than C<MD5> and C<SHA1>.
 
 Related reading material:
-Percona Toolkit UDFs: L<https://www.percona.com/doc/percona-server/LATEST/management/udf_percona_toolkit.html>
+Percona Toolkit UDFs: L<https://docs.percona.com/percona-server/8.0/udf-percona-toolkit.html>
 How to avoid hash collisions when using MySQL’s CRC32 function: L<https://www.percona.com/blog/2014/10/13/how-to-avoid-hash-collisions-when-using-mysqls-crc32-function/>
 
 =head1 LIMITATIONS
@@ -12885,9 +13023,9 @@ How to avoid hash collisions when using MySQL’s CRC32 function: L<https://www.
 =item Replicas using row-based replication
 
 pt-table-checksum requires statement-based replication, and it sets
-C<binlog_format=STATEMENT> on the master, but due to a MySQL limitation
+C<binlog_format=STATEMENT> on the source, but due to a MySQL limitation
 replicas do not honor this change.  Therefore, checksums will not replicate
-past any replicas using row-based replication that are masters for
+past any replicas using row-based replication that are sources for
 further replicas.
 
 The tool automatically checks the C<binlog_format> on all servers.
@@ -12897,10 +13035,10 @@ See L<"--[no]check-binlog-format"> .
 
 =item Schema and table differences
 
-The tool presumes that schemas and tables are identical on the master and
+The tool presumes that schemas and tables are identical on the source and
 all replicas.  Replication will break if, for example, a replica does not
-have a schema that exists on the master (and that schema is checksummed),
-or if the structure of a table on a replica is different than on the master.
+have a schema that exists on the source (and that schema is checksummed),
+or if the structure of a table on a replica is different than on the source.
 
 =back
 
@@ -12910,7 +13048,7 @@ pt-table-checksum works with Percona XtraDB Cluster (PXC) 5.5.28-23.7 and newer.
 The number of possible Percona XtraDB Cluster setups is large given that
 it can be used with regular replication as well.  Therefore, only the setups
 listed below are supported and known to work.  Other setups, like cluster
-to cluster, are not support and probably don't work.
+to cluster, are not supported and probably don't work.
 
 Except where noted, all of the following supported setups require that you
 use the C<dsn> method for L<"--recursion-method"> to specify cluster nodes.
@@ -12933,9 +13071,9 @@ supported.  This applies to all supported setups.
 
 =item Single cluster with replicas
 
-Cluster nodes can also be regular masters and replicate to regular replicas.
-However, the tool can only detect diffs on a replica if ran on the replica's
-"master node".  For example, if the cluster setup is,
+Cluster nodes can also be regular replication sources and replicate to regular
+replicas. However, the tool can only detect diffs on a replica if ran on the
+replica's "source node".  For example, if the cluster setup is,
 
    node1 <-> node2 <-> node3
                |         |
@@ -12951,23 +13089,23 @@ cannot be checked (e.g. replica2 when running on node3).
 
 Replicas in this setup are still subject to L<"--[no]check-binlog-format">.
 
-=item Master to single cluster
+=item Replication source to single cluster
 
-It is possible for a regular master to replicate to a cluster, as if the
-cluster were one logical slave, like:
+It is possible for a regular source to replicate to a cluster, as if the
+cluster were one logical replica, like:
 
-   master -> node1 <-> node2 <-> node3
+   source -> node1 <-> node2 <-> node3
 
-The tool supports this setup but only if ran on the master and if all nodes
+The tool supports this setup but only if ran on the source and if all nodes
 in the cluster are consistent with the "direct replica" (node1 in this example)
-of the master.  For example, if all nodes have value "foo" for row 1 but
-the master has value "bar" for the same row, this diff will be detected.
+of the source.  For example, if all nodes have value "foo" for row 1 but
+the source has value "bar" for the same row, this diff will be detected.
 Or if only node1 has this diff, it will also be detected.  But if only node2
 or node3 has this diff, it will not be detected.  Therefore, this setup is
-used to check that the master and the cluster as a whole are consistent.
+used to check that the source and the cluster as a whole are consistent.
 
 In this setup, the tool can automatically detect the "direct replica" (node1)
-when ran on the master, so you do not have to use the C<dsn> method for
+when ran on the source, so you do not have to use the C<dsn> method for
 L<"--recursion-method"> because node1 will represent the entire cluster,
 which is why all other nodes must be consistent with it.
 
@@ -13013,7 +13151,7 @@ progress.
 
 =item DIFFS
 
-The number of chunks that differ from the master on one or more replicas.
+The number of chunks that differ from the source on one or more replicas.
 If C<--no-replicate-check> is specified, this column will always have zeros.
 If L<"--replicate-check-only"> is specified, then only tables with differences
 are printed.
@@ -13076,21 +13214,21 @@ The columns are as follows:
 
 =item TABLE
 
-The database and table that differs from the master.
+The database and table that differs from the source.
 
 =item CHUNK
 
-The chunk number of the table that differs from the master.
+The chunk number of the table that differs from the source.
 
 =item CNT_DIFF
 
 The number of chunk rows on the replica minus the number of chunk rows
-on the master.
+on the source.
 
 =item CRC_DIFF
 
 1 if the CRC of the chunk on the replica is different than the CRC of the
-chunk on the master, else 0.
+chunk on the source, else 0.
 
 =item CHUNK_INDEX
 
@@ -13125,7 +13263,7 @@ with these flags:
    ERROR                     1  A non-fatal error occurred
    ALREADY_RUNNING           2  --pid file exists and the PID is running
    CAUGHT_SIGNAL             4  Caught SIGHUP, SIGINT, SIGPIPE, or SIGTERM
-   NO_SLAVES_FOUND           8  No replicas or cluster nodes were found
+   NO_REPLICAS_FOUND         8  No replicas or cluster nodes were found
    TABLE_DIFF               16  At least one diff was found
    SKIP_CHUNK               32  At least one chunk was skipped
    SKIP_TABLE               64  At least one table was skipped
@@ -13157,12 +13295,13 @@ Prompt for a password when connecting to MySQL.
 type: string
 
 Channel name used when connected to a server using replication channels.
-Suppose you have two masters, master_a at port 12345, master_b at port 1236 and
-a slave connected to both masters using channels chan_master_a and chan_master_b.
-If you want to run pt-table-sync to synchronize the slave against master_a, pt-table-sync
-won't be able to determine what's the correct master since SHOW SLAVE STATUS
-will return 2 rows. In this case, you can use --channel=chan_master_a to specify
-the channel name to use in the SHOW SLAVE STATUS command.
+Suppose you have two replication sources, source_a at port 12345, source_b
+at port 1236 and a replica connected to both sources using channels chan_source_a
+and chan_source_b. If you want to run pt-table-sync to synchronize the replica 
+against source_a, pt-table-checksum won't be able to determine what's the correct
+source since SHOW REPLICA STATUS will return 2 rows. In this case, you can use 
+--channel=chan_source_a to specify the channel name to use in the SHOW REPLICA STATUS
+command.
 
 =item --[no]check-binlog-format
 
@@ -13230,8 +13369,8 @@ binlog_ignore_db and replicate_do_db.  If it finds any such filters,
 it aborts with an error.
 
 If the replicas are configured with any filtering options, you should be careful
-not to checksum any databases or tables that exist on the master and not the
-replicas.  Changes to such tables might normally be skipped on the replicas
+not to checksum any databases or tables that exist on the replication source and
+not the replicas.  Changes to such tables might normally be skipped on the replicas
 because of the filtering options, but the checksum queries modify the contents
 of the table that stores the checksums, not the tables whose data you are
 checksumming.  Therefore, these queries will be executed on the replica, and if
@@ -13246,29 +13385,43 @@ checks.  See also L<"--replicate-database">.
 
 See also L<"REPLICA CHECKS">.
 
-=item --check-slave-lag
+=item --check-replica-lag
 
 type: string; group: Throttle
 
 Pause checksumming until this replica's lag is less than L<"--max-lag">.  The
-value is a DSN that inherits properties from the master host and the connection
+value is a DSN that inherits properties from the source host and the connection
 options (L<"--port">, L<"--user">, etc.).  By default, pt-table-checksum
 monitors lag on all connected replicas, but this option limits lag monitoring
 to the specified replica.  This is useful if certain replicas are intentionally
-lagged (with L<pt-slave-delay> for example), in which case you can specify
+lagged (with L<https://dev.mysql.com/doc/refman/en/replication-delayed.html> for example), in which case you can specify
 a normal replica to monitor.
 
 See also L<"REPLICA CHECKS">.
+
+=item --[no]check-replica-tables
+
+default: yes; group: Safety
+
+Checks that tables on replicas exist and have all the checksum L<"--columns">.
+Tables missing on replicas or not having all the checksum L<"--columns"> can
+cause the tool to break replication when it tries to check for differences.
+Only disable this check if you are aware of the risks and are sure that all
+tables on all replicas exist and are identical to the source.
+
+=item --check-slave-lag
+
+type: string
+
+This option is deprecated and will be removed in future releases.
+Use L<"--check-replica-lag"> instead.
 
 =item --[no]check-slave-tables
 
 default: yes; group: Safety
 
-Checks that tables on slaves exist and have all the checksum L<"--columns">.
-Tables missing on slaves or not having all the checksum L<"--columns"> can
-cause the tool to break replication when it tries to check for differences.
-Only disable this check if you are aware of the risks and are sure that all
-tables on all slaves exist and are identical to the master.
+This option is deprecated and will be removed in future releases.
+Use L<"--[no]check-replica-tables"> instead.
 
 =item --chunk-index
 
@@ -13435,6 +13588,8 @@ the table from which the tool resumes won't be emptied.
 To empty the entire replicate table, you must manually execute C<TRUNCATE TABLE>
 before running the tool.
 
+See also -L<"--truncate-replicate-table">.
+
 =item --engines
 
 short form: -e; type: hash; group: Filter
@@ -13547,10 +13702,10 @@ type: time; default: 1s; group: Throttle
 
 Pause checksumming until all replicas' lag is less than this value.  After each
 checksum query (each chunk), pt-table-checksum looks at the replication lag of
-all replicas to which it connects, using Seconds_Behind_Master. If any replica
+all replicas to which it connects, using Seconds_Behind_Source. If any replica
 is lagging more than the value of this option, then pt-table-checksum will sleep
 for L<"--check-interval"> seconds, then check all replicas again.  If you
-specify L<"--check-slave-lag">, then the tool only examines that server for
+specify L<"--check-replica-lag">, then the tool only examines that server for
 lag, not all servers.
 
 The tool waits forever for replicas to stop lagging.  If any replica is
@@ -13619,9 +13774,7 @@ type: string
 
 Perl module file that defines a C<pt_table_checksum_plugin> class.
 A plugin allows you to write a Perl module that can hook into many parts
-of pt-table-checksum.  This requires a good knowledge of Perl and
-Percona Toolkit conventions, which are beyond this scope of this
-documentation.  Please contact Percona if you have questions or need help.
+of pt-table-checksum.
 
 See L<"PLUGIN"> for more information.
 
@@ -13670,7 +13823,7 @@ Preferred recursion method for discovering replicas.  pt-table-checksum
 performs several L<"REPLICA CHECKS"> before and while running.
 
 Although replicas are not required to run pt-table-checksum, the tool
-cannot detect diffs on slaves that it cannot discover.  Therefore,
+cannot detect diffs on replicas that it cannot discover.  Therefore,
 a warning is printed and the L<"EXIT STATUS"> is non-zero if no replicas
 are found and the method is not C<none>.  If this happens, try a different
 recursion method, or use the C<dsn> method to specify the replicas to check.
@@ -13678,14 +13831,14 @@ recursion method, or use the C<dsn> method to specify the replicas to check.
 Possible methods are:
 
   METHOD       USES
-  ===========  =============================================
+  ===========  =================================================
   processlist  SHOW PROCESSLIST
-  hosts        SHOW SLAVE HOSTS
+  hosts        SHOW REPLICAS (SHOW SLAVE HOSTS before MySQL 8.1)
   cluster      SHOW STATUS LIKE 'wsrep\_incoming\_addresses'
   dsn=DSN      DSNs from a table
-  none         Do not find slaves
+  none         Do not find replicas
 
-The C<processlist> method is the default, because C<SHOW SLAVE HOSTS> is not
+The C<processlist> method is the default, because C<SHOW REPLICAS> is not
 reliable.  However, if the server uses a non-standard port (not 3306), then
 the C<hosts> method becomes the default because it works better in this case.
 
@@ -13702,7 +13855,7 @@ but this functionality is experimental.
 The C<dsn> method is special: rather than automatically discovering replicas,
 this method specifies a table with replica DSNs.  The tool will only connect
 to these replicas.  This method works best when replicas do not use the same
-MySQL username or password as the master, or when you want to prevent the tool
+MySQL username or password as the source, or when you want to prevent the tool
 from connecting to certain replicas.  The C<dsn> method is specified like:
 C<--recursion-method dsn=h=host,D=percona,t=dsns>.  The specified DSN must
 have D and t parts, or just a database-qualified t part, which specify the
@@ -13719,10 +13872,10 @@ DSNs are ordered by C<id>, but C<id> and C<parent_id> are otherwise ignored.
 The C<dsn> column contains a replica DSN like it would be given on the command
 line, for example: C<"h=replica_host,u=repl_user,p=repl_pass">.
 
-The C<none> method makes the tool ignore all slaves and cluster nodes. This
+The C<none> method makes the tool ignore all replicas and cluster nodes. This
 method is not recommended because it effectively disables the
 L<"REPLICA CHECKS"> and no differences can be found. It is useful, however, if
-you only need to write checksums on the master or a single cluster node. The
+you only need to write checksums on the source or a single cluster node. The
 safer alternative is C<--no-replicate-check>: the tool finds replicas and
 cluster nodes, performs the L<"REPLICA CHECKS">, but does not check for
 differences. See L<"--[no]replicate-check">.
@@ -13744,8 +13897,8 @@ structure (MAGIC_create_replicate):
      upper_boundary TEXT             NULL,
      this_crc       CHAR(40)     NOT NULL,
      this_cnt       INT          NOT NULL,
-     master_crc     CHAR(40)         NULL,
-     master_cnt     INT              NULL,
+     source_crc     CHAR(40)         NULL,
+     source_cnt     INT              NULL,
      ts             TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
      PRIMARY KEY (db, tbl, chunk),
      INDEX ts_db_tbl (ts, db, tbl)
@@ -13762,8 +13915,8 @@ are checksumming InnoDB tables, and you use MyISAM for this table, a deadlock
 will break replication, because the mixture of transactional and
 non-transactional tables in the checksum statements will cause it to be written
 to the binlog even though it had an error.  It will then replay without a
-deadlock on the replicas, and break replication with "different error on master
-and slave."  This is not a problem with pt-table-checksum; it's a problem with
+deadlock on the replicas, and break replication with "different error on source
+and replica."  This is not a problem with pt-table-checksum; it's a problem with
 MySQL replication, and you can read more about it in the MySQL manual.
 
 The replicate table is never checksummed (the tool automatically adds this
@@ -13775,7 +13928,7 @@ default: yes
 
 Check replicas for data differences after finishing each table.  The tool finds
 differences by executing a simple SELECT statement on all detected replicas.
-The query compares the replica's checksum results to the master's checksum
+The query compares the replica's checksum results to the source's checksum
 results.  It reports differences in the DIFFS column of the output.
 
 =item --replicate-check-only
@@ -13794,7 +13947,7 @@ type: int; default: 1
 Retry checksum comparison this many times when a difference is encountered.
 Only when a difference persists after this number of checks is it considered valid.
 Using this option with a value of 2 or more alleviates spurious differences that
-arise when using the --resume option.
+arise when using the L<"--resume"> option.
 
 =item --replicate-database
 
@@ -13837,31 +13990,52 @@ time it is ran.
 
 type: string; default: #
 
-The separator character used for CONCAT_WS().  This character is used to join
+The separator character used for C<CONCAT_WS()>.  This character is used to join
 the values of columns when checksumming.
+
+=item --skip-check-replica-lag
+
+type: DSN; repeatable: yes
+
+DSN to skip when checking replica lag. It can be used multiple times.
+Example: C<--skip-check-replica-lag h=127.1,P=12345 --skip-check-replica-lag h=127.1,P=12346>
 
 =item --skip-check-slave-lag
 
 type: DSN; repeatable: yes
 
-DSN to skip when checking slave lag. It can be used multiple times.
-Example: --skip-check-slave-lag h=127.1,P=12345 --skip-check-slave-lag h=127.1,P=12346
+This option is deprecated and will be removed in future releases.
+Use L<"--skip-check-replica-lag"> instead.
 
 =item --slave-user
 
 type: string
 
-Sets the user to be used to connect to the slaves.
-This parameter allows you to have a different user with less privileges on the
-slaves but that user must exist on all slaves.
+This option is deprecated and will be removed in future releases.
+Use L<"--replica-user"> instead.
 
 =item --slave-password
 
 type: string
 
-Sets the password to be used to connect to the slaves.
-It can be used with --slave-user and the password for the user must be the same
-on all slaves.
+This option is deprecated and will be removed in future releases.
+Use L<"--replica-password"> instead.
+
+=item --replica-user
+
+type: string
+
+Sets the user to be used to connect to the replicas.
+This parameter allows you to have a different user with less privileges on the
+replicas but that user must exist on all replicas.
+
+=item --replica-password
+
+type: string
+
+Sets the password to be used to connect to the replicas.
+It can be used with L<"--replica-user"> and the password for the user must be the same
+on all replicas.
 
 =item --set-vars
 
@@ -13888,16 +14062,16 @@ short form: -S; type: string; group: Connection
 
 Socket file to use for connection.
 
-=item --slave-skip-tolerance
+=item --replica-skip-tolerance
 
 type: float; default: 1.0
 
-When a master table is marked to be checksummed in only one chunk but a slave
+When a source table is marked to be checksummed in only one chunk but a replica
 table exceeds the maximum accepted size for this, the table is skipped.
 Since number of rows are often rough estimates, many times tables are skipped
 needlessly for very small differences.
 This option provides a max row excess tolerance to prevent this.
-For example a value of 1.2 will tolerate slave tables with up to 20% excess rows.
+For example a value of 1.2 will tolerate replica tables with up to 20% excess rows.
 
 =item --tables
 
@@ -13914,18 +14088,18 @@ Checksum only tables whose names match this Perl regex.
 
 =item --trim
 
-Add TRIM() to VARCHAR columns (helps when comparing 4.1 to >= 5.0).
+Add C<TRIM()> to C<VARCHAR> columns (helps when comparing 4.1 to >= 5.0).
 This is useful when you don't care about the trailing space differences between
 MySQL versions that vary in their handling of trailing spaces. MySQL 5.0 and
-later all retain trailing spaces in VARCHAR, while previous versions would
+later all retain trailing spaces in C<VARCHAR>, while previous versions would
 remove them.  These differences will cause false checksum differences.
 
 =item --truncate-replicate-table
 
 Truncate the replicate table before starting the checksum.
-This parameter differs from L<--empty-replicate-table> which only deletes the rows
+This parameter differs from L<"--[no]empty-replicate-table"> which only deletes the rows
 for the table being checksummed when starting the checksum for that table, while
-L<--truncate-replicate-table> will truncate the replicate table at the beginning of the
+L<"--truncate-replicate-table"> will truncate the replicate table at the beginning of the
 process and thus, all previous checksum information will be losti, even if the process
 stops due to an error.
 
@@ -13986,8 +14160,8 @@ keyword.  You might need to quote the value.  Here is an example:
 =head1 REPLICA CHECKS
 
 By default, pt-table-checksum attempts to find and connect to all replicas
-connected to the master host.  This automated process is called
-"slave recursion" and is controlled by the L<"--recursion-method"> and
+connected to the source host.  This automated process is called
+"replica recursion" and is controlled by the L<"--recursion-method"> and
 L<"--recurse"> options.  The tool performs these checks on all replicas:
 
 =over
@@ -14003,17 +14177,17 @@ disabled by specifying C<--no-check-replication-filters>.
 
 pt-table-checksum checks that the L<"--replicate"> table exists on all
 replicas, else checksumming can break replication when updates to the table
-on the master replicate to a replica that doesn't have the table.  This
+on the source replicate to a replica that doesn't have the table.  This
 check cannot be disabled, and the tool waits forever until the table
 exists on all replicas, printing L<"--progress"> messages while it waits.
 
 =item 3. Single chunk size
 
-If a table can be checksummed in a single chunk on the master,
+If a table can be checksummed in a single chunk on the source,
 pt-table-checksum will check that the table size on all replicas is less than
 L<"--chunk-size"> * L<"--chunk-size-limit">. This prevents a rare problem
-where the table on the master is empty or small, but on a replica it is much
-larger. In this case, the single chunk checksum on the master would overload
+where the table on the source is empty or small, but on a replica it is much
+larger. In this case, the single chunk checksum on the source would overload
 the replica.
 
 Another rare problem occurs when the table size on a replica is close to
@@ -14030,10 +14204,10 @@ This check cannot be disabled.
 =item 4. Lag
 
 After each chunk, pt-table-checksum checks the lag on all replicas, or only
-the replica specified by L<"--check-slave-lag">.  This helps the tool
+the replica specified by L<"--check-replica-lag">.  This helps the tool
 not to overload the replicas with checksum data.  There is no way to
 disable this check, but you can specify a single replica to check with
-L<"--check-slave-lag">, and if that replica is the fastest, it will help
+L<"--check-replica-lag">, and if that replica is the fastest, it will help
 prevent the tool from waiting too long for replica lag to abate.
 
 =item 5. Checksum chunks
@@ -14061,7 +14235,7 @@ These hooks, in this order, are called if defined:
    init
    before_replicate_check
    after_replicate_check
-   get_slave_lag
+   get_replica_lag
    before_checksum_table
    after_checksum_table
 
@@ -14071,9 +14245,9 @@ to a hook, search for the hook's name in the tool's source code, like:
    # --plugin hook
    if ( $plugin && $plugin->can('init') ) {
       $plugin->init(
-         slaves         => $slaves,
-         slave_lag_cxns => $slave_lag_cxns,
-         repl_table     => $repl_table,
+         replicas         => $replicas,
+         replica_lag_cxns => $replica_lag_cxns,
+         repl_table       => $repl_table,
       );
    }
 
@@ -14145,6 +14319,12 @@ DSN table table.
 dsn: user; copy: yes
 
 User for login if not current user.
+
+=item * s
+
+dsn: mysql_ssl; copy: yes
+
+Create SSL connection
 
 =back
 

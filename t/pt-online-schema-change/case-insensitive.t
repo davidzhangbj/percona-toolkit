@@ -19,10 +19,10 @@ require VersionParser;
 
 my $dp         = new DSNParser(opts=>$dsn_opts);
 my $sb         = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
+my $source_dbh = $sb->get_dbh_for('source');
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 my @args   = qw(--set-vars innodb_lock_wait_timeout=3);
@@ -31,18 +31,18 @@ my $dsn    = "h=127.1,P=12345,u=msandbox,p=msandbox";
 my $exit   = 0;
 my $sample = "t/pt-online-schema-change/samples";
 
-my $lower_case_table_names = $master_dbh->selectrow_array('SELECT @@lower_case_table_names');
+my $lower_case_table_names = $source_dbh->selectrow_array('SELECT @@lower_case_table_names');
 
 if ( $lower_case_table_names == 0) {
    # Preparing test setup on Linux
    diag(`$trunk/sandbox/stop-sandbox 12348 >/dev/null`);
-   diag(`EXTRA_DEFAULTS_FILE="$trunk/t/pt-online-schema-change/samples/lower_case_table_names_1.cnf" $trunk/sandbox/start-sandbox master 12348 >/dev/null`);
+   diag(`EXTRA_DEFAULTS_FILE="$trunk/t/pt-online-schema-change/samples/lower_case_table_names_1.cnf" $trunk/sandbox/start-sandbox source 12348 >/dev/null`);
 
-   $master_dbh = $sb->get_dbh_for('master1');
+   $source_dbh = $sb->get_dbh_for('source1');
    $dsn    = "h=127.1,P=12348,u=msandbox,p=msandbox";
-   $sb->load_file('master1', "$sample/basic_no_fks_innodb.sql");
+   $sb->load_file('source1', "$sample/basic_no_fks_innodb.sql");
 } else {
-   $sb->load_file('master', "$sample/basic_no_fks_innodb.sql");
+   $sb->load_file('source', "$sample/basic_no_fks_innodb.sql");
 }
 
 ($output, $exit) = full_output(
@@ -56,7 +56,7 @@ like(
    "Table is altered using capital name 'T'"
 ) or diag($output);
 
-my $ddl = $master_dbh->selectrow_arrayref("show create table pt_osc.T");
+my $ddl = $source_dbh->selectrow_arrayref("show create table pt_osc.T");
 unlike(
    $ddl->[1],
    qr/^\s+["`]d["`]/m,
@@ -73,7 +73,7 @@ is(
 # Done.
 # #############################################################################
 diag(`$trunk/sandbox/stop-sandbox 12348 >/dev/null`);
-$master_dbh = $sb->get_dbh_for('master');
-$sb->wipe_clean($master_dbh);
+$source_dbh = $sb->get_dbh_for('source');
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

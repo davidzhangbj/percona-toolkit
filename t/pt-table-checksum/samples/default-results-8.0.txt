@@ -2,7 +2,7 @@ if all tables checksummed
 checksum ...   
 ERRORS DIFFS ROWS SKIPPED TABLE
 0 0 0 0 mysql.columns_priv
-0 0 0 0 mysql.component
+0 0 1 0 mysql.component
 0 0 2 0 mysql.db
 0 0 0 0 mysql.default_roles
 0 1 2 0 mysql.engine_cost

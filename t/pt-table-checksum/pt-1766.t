@@ -22,11 +22,11 @@ require "$trunk/bin/pt-table-checksum";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
-my $slave1_dbh = $sb->get_dbh_for('slave1');
+my $dbh = $sb->get_dbh_for('source');
+my $replica1_dbh = $sb->get_dbh_for('replica1');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 else {
    plan tests => 2;
@@ -40,14 +40,14 @@ $dbh->do("CREATE DATABASE IF NOT EXISTS test");
 $dbh->do("CREATE TABLE `test`.`$table` (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(5)) Engine=InnoDB");
 
 diag(`util/mysql_random_data_load --host=127.0.0.1 --port=12345 --user=msandbox --password=msandbox test $table $num_rows`);
-$slave1_dbh->do("DELETE FROM `test`.`$table` WHERE 1=1");
+$replica1_dbh->do("DELETE FROM `test`.`$table` WHERE 1=1");
 
 diag("Starting checksum");
 # The sandbox servers run with lock_wait_timeout=3 and it's not dynamic
 # so we need to specify --set-vars innodb_lock_wait_timeout=3 else the tool will die.
 # And --max-load "" prevents waiting for status variables.
-my $master_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
-my @args       = ($master_dsn, qw(--no-check-binlog-format --chunk-size 10));
+my $source_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
+my @args       = ($source_dsn, qw(--no-check-binlog-format --chunk-size 10));
 my $output;
 
 $output = output(

@@ -527,6 +527,7 @@ my @password_commas = (
    ['u=a,p=foo\,,P=12345',    'foo,',    12345, 'Pass ends with comma'],
    ['u=a,p=foo\,',            'foo,',    undef, 'Pass ends with comma, last part'],
    ['u=a,p=\,,P=12345',       ',',       12345, 'Pass is a comma'],
+   ['u=a,p=foo=bar,P=12345',  'foo=bar', 12345, '= in a pass'],
 );
 foreach my $password_comma ( @password_commas ) {
    test_password_comma(@$password_comma);
@@ -551,8 +552,9 @@ sub test_password_comma_with_auto {
 }
 
 @password_commas = (
-   ['host,p=a\,z,P=9', 'a,z', 9, 'Comma-pass with leading bareword host'],
-   ['p=a\,z,P=9,host', 'a,z', 9, 'Comma-pass with trailing bareword host'],
+   ['host,p=a\,z,P=9',    'a,z',     9, 'Comma-pass with leading bareword host'],
+   ['p=a\,z,P=9,host',    'a,z',     9, 'Comma-pass with trailing bareword host'],
+   ['p=foo=bar,P=9,host', 'foo=bar', 9, '= in a pass with trailing bareword host'],
 
 );
 foreach my $password_comma ( @password_commas ) {

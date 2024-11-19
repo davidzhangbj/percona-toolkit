@@ -147,7 +147,7 @@ master wait_pos_backtraverse |
             master yes_tx | 
 EOF
 
-_semi_sync_stats_for "master" "$samples/mysql-variables-with-semisync.txt" > "$PT_TMPDIR/got"
+_semi_sync_stats_for "master" "$samples/mysql-variables-with-semisync.txt" "slave" > "$PT_TMPDIR/got"
 no_diff "$PT_TMPDIR/expected" "$PT_TMPDIR/got" "semisync replication"
 
 # ###########################################################################
@@ -805,20 +805,20 @@ is \
 # https://bugs.launchpad.net/percona-toolkit/+bug/1015590
 # ###########################################################################
 
-section_percona_server_features "$samples/percona-server-5.5-variables" > "$PT_TMPDIR/got"
+section_percona_server_features "$samples/percona-server-5.5-variables" "slave" > "$PT_TMPDIR/got"
 
 no_diff \
    "$PT_TMPDIR/got" \
    "$samples/expected_output_ps-features.txt" \
    "Bug 1015590: pt-mysql-summary not Percona Server 5.5-ready"
 
-section_percona_server_features "$samples/percona-server-5.1-variables" > "$PT_TMPDIR/got"
+section_percona_server_features "$samples/percona-server-5.1-variables" "slave" > "$PT_TMPDIR/got"
 no_diff \
    "$PT_TMPDIR/got" \
    "$samples/expected_output_ps-5.1-features.txt" \
    "Bug 1015590: section_percona_server_features works on 5.1 with innodb_adaptive_checkpoint=none"
 
-section_percona_server_features "$samples/percona-server-5.1-variables-martin" > "$PT_TMPDIR/got"
+section_percona_server_features "$samples/percona-server-5.1-variables-martin" "slave" > "$PT_TMPDIR/got"
 no_diff \
    "$PT_TMPDIR/got" \
    "$samples/expected_output_ps-5.1-martin.txt" \

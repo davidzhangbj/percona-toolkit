@@ -568,5 +568,4 @@ dentry-state | 10194137	9907146	45	0	2973650	0
 44034    -17    sshd
 48761    -17    sshd
 # Memory management ##########################################
-Transparent huge pages are enabled.
 # The End ####################################################

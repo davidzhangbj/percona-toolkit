@@ -21,7 +21,7 @@ require VersionParser;
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
    plan skip_all => "Cannot connect to sandbox master";
@@ -38,7 +38,7 @@ my ($size, $chosen_key);
 
 sub key_info {
    my ( $file, $db, $tbl, $key, $cols ) = @_;
-   $sb->load_file('master', $file, $db);
+   $sb->load_file('source', $file, $db);
    my $tbl_name = $q->quote($db, $tbl);
    my $struct   = $tp->parse( load_file($file) );
    return (
@@ -83,7 +83,7 @@ is_deeply(
    'Two column int key'
 );
 
-$sb->load_file('master', 't/lib/samples/issue_331-parent.sql', 'test');
+$sb->load_file('source', 't/lib/samples/issue_331-parent.sql', 'test');
 %key = key_info('t/lib/samples/issue_331.sql', 'test', 'issue_331_t2', 'fk_1', ['id']);
 ($size, $chosen_key) = $ks->get_key_size(%key);
 is(
@@ -110,7 +110,7 @@ $dbh->do('DROP TABLE IF EXISTS test.issue_364');
    'BASE_KID_ID',
    [qw(BASE_KID_ID ID)]
 );
-$sb->load_file('master', 't/lib/samples/issue_364-data.sql', 'test');
+$sb->load_file('source', 't/lib/samples/issue_364-data.sql', 'test');
 
 # This issue had another issue: the key is ALL CAPS, but TableParser
 # lowercases all identifies, so KeySize said the key didn't exist.
@@ -214,7 +214,7 @@ is(
 # #############################################################################
 # https://bugs.launchpad.net/percona-toolkit/+bug/1201443
 # #############################################################################
-$sb->load_file('master', "t/pt-duplicate-key-checker/samples/fk_chosen_index_bug_1201443.sql");
+$sb->load_file('source', "t/pt-duplicate-key-checker/samples/fk_chosen_index_bug_1201443.sql");
 
 ($size, $chosen_key) = $ks->get_key_size(
    name       => 'child_ibfk_2',

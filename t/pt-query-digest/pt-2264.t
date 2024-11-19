@@ -14,6 +14,7 @@ use Test::More;
 use PerconaTest;
 use DSNParser;
 use Sandbox;
+require VersionParser;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
@@ -22,10 +23,10 @@ if ( $sandbox_version lt '8.0') {
    plan skip_all => "Requires MySQL 8.0 or newer";
 }
 
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 else {
    plan tests => 3;

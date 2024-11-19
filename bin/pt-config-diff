@@ -2033,7 +2033,7 @@ sub get_cxn_params {
       $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
          . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
                      grep { defined $info->{$_} }
-                     qw(F h P S A))
+                     qw(F h P S A s))
          . ';mysql_read_default_group=client'
          . ($info->{L} ? ';mysql_local_infile=1' : '');
    }
@@ -5692,7 +5692,7 @@ There is no output when there are no differences.  When there are differences,
 pt-config-diff prints a report to STDOUT that looks similar to the following:
 
   2 config differences
-  Variable                  my.master.cnf   my.slave.cnf
+  Variable                  my.source.cnf   my.replica.cnf
   ========================= =============== ===============
   datadir                   /tmp/12345/data /tmp/12346/data
   port                      12345           12346
@@ -5934,6 +5934,12 @@ Socket file to use for connection.
 dsn: user; copy: yes
 
 User for login if not current user.
+
+=item * s
+
+dsn: mysql_ssl; copy: yes
+
+Create SSL connection
 
 =back
 

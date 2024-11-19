@@ -27,14 +27,14 @@ $Data::Dumper::Quotekeys = 0;
 
 my $dp         = new DSNParser(opts=>$dsn_opts);
 my $sb         = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave_dbh  = $sb->get_dbh_for('slave1');
+my $source_dbh = $sb->get_dbh_for('source');
+my $replica_dbh  = $sb->get_dbh_for('replica1');
 
-if ( !$master_dbh ) {
-    plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+    plan skip_all => 'Cannot connect to sandbox source';
 }
-elsif ( !$slave_dbh ) {
-    plan skip_all => 'Cannot connect to sandbox slave';
+elsif ( !$replica_dbh ) {
+    plan skip_all => 'Cannot connect to sandbox replica';
 }
 
 my $q      = new Quoter();
@@ -66,12 +66,12 @@ sub test_alter_table {
     my $delete_triggers = $args{delete_triggers} || '';
 
     if ( my $file = $args{file} ) {
-        $sb->load_file('master', "$sample/$file");
-        $master_dbh->do("USE `$db`");
-        $slave_dbh->do("USE `$db`");
+        $sb->load_file('source', "$sample/$file");
+        $source_dbh->do("USE `$db`");
+        $replica_dbh->do("USE `$db`");
     }
 
-    my $ddl        = $tp->get_create_table($master_dbh, $db, $tbl);
+    my $ddl        = $tp->get_create_table($source_dbh, $db, $tbl);
     my $tbl_struct = $tp->parse($ddl);
 
     my $cols = '*';
@@ -81,13 +81,13 @@ sub test_alter_table {
         die "I need a drop_col argument" unless $col;
         $cols = join(', ', grep { $_ ne $col } @{$tbl_struct->{cols}});
     }
-    my $orig_rows = $master_dbh->selectall_arrayref(
+    my $orig_rows = $source_dbh->selectall_arrayref(
         "SELECT $cols FROM $table ORDER BY `$pk_col`");
 
-    my $orig_tbls = $master_dbh->selectall_arrayref(
+    my $orig_tbls = $source_dbh->selectall_arrayref(
         "SHOW TABLES FROM `$db`");
 
-    my $orig_max_id = $master_dbh->selectall_arrayref(
+    my $orig_max_id = $source_dbh->selectall_arrayref(
         "SELECT MAX(`$pk_col`) FROM `$db`.`$tbl`");
 
     my $triggers_sql = "SELECT TRIGGER_SCHEMA, TRIGGER_NAME, DEFINER, ACTION_STATEMENT, SQL_MODE, "
@@ -97,7 +97,7 @@ sub test_alter_table {
     .  "  AND EVENT_OBJECT_TABLE = '$tbl'";
 
 
-    my $orig_triggers = $master_dbh->selectall_arrayref($triggers_sql);
+    my $orig_triggers = $source_dbh->selectall_arrayref($triggers_sql);
 
     my ($orig_auto_inc) = $ddl =~ m/\s+AUTO_INCREMENT=(\d+)\s+/;
 
@@ -106,7 +106,7 @@ sub test_alter_table {
     if ( $fk_method ) {
         foreach my $tbl ( @$orig_tbls ) {
             my $fks = $tp->get_fks(
-                $tp->get_create_table($master_dbh, $db, $tbl->[0]));
+                $tp->get_create_table($source_dbh, $db, $tbl->[0]));
             push @orig_fks, $fks;
         }
     }
@@ -130,7 +130,7 @@ sub test_alter_table {
         stderr => 1,
     );
 
-    my $new_ddl = $tp->get_create_table($master_dbh, $db, $tbl);
+    my $new_ddl = $tp->get_create_table($source_dbh, $db, $tbl);
     my $new_tbl_struct = $tp->parse($new_ddl);
     my $fail    = 0;
 
@@ -141,7 +141,7 @@ sub test_alter_table {
     ) or $fail = 1;
 
     # There should be no new or missing tables.
-    my $new_tbls = $master_dbh->selectall_arrayref("SHOW TABLES FROM `$db`");
+    my $new_tbls = $source_dbh->selectall_arrayref("SHOW TABLES FROM `$db`");
     is_deeply(
         $new_tbls,
         $orig_tbls,
@@ -149,7 +149,7 @@ sub test_alter_table {
     ) or $fail = 1;
 
     # Rows in the original and new table should be identical.
-    my $new_rows = $master_dbh->selectall_arrayref("SELECT $cols FROM $table ORDER BY `$pk_col`");
+    my $new_rows = $source_dbh->selectall_arrayref("SELECT $cols FROM $table ORDER BY `$pk_col`");
     is_deeply(
         $new_rows,
         $orig_rows,
@@ -157,7 +157,7 @@ sub test_alter_table {
     ) or $fail = 1;
 
     if ( grep { $_ eq '--preserve-triggers' } @$cmds && !$delete_triggers) {
-        my $new_triggers = $master_dbh->selectall_arrayref($triggers_sql);
+        my $new_triggers = $source_dbh->selectall_arrayref($triggers_sql);
         is_deeply(
             $new_triggers,
             $orig_triggers,
@@ -166,7 +166,7 @@ sub test_alter_table {
     }
 
     if ( grep { $_ eq '--no-drop-new-table' } @$cmds ) {
-        $new_rows = $master_dbh->selectall_arrayref(
+        $new_rows = $source_dbh->selectall_arrayref(
             "SELECT $cols FROM `$db`.`$new_tbl` ORDER BY `$pk_col`");
         is_deeply(
             $new_rows,
@@ -175,7 +175,7 @@ sub test_alter_table {
         ) or $fail = 1;
     }
 
-    my $new_max_id = $master_dbh->selectall_arrayref(
+    my $new_max_id = $source_dbh->selectall_arrayref(
         "SELECT MAX(`$pk_col`) FROM `$db`.`$tbl`");
     is(
         $orig_max_id->[0]->[0],
@@ -226,7 +226,7 @@ sub test_alter_table {
     elsif ( $test_type eq 'new_engine' ) {
         my $new_engine = lc($args{new_engine});
         die "I need a new_engine argument" unless $new_engine;
-        my $rows = $master_dbh->selectall_hashref(
+        my $rows = $source_dbh->selectall_hashref(
             "SHOW TABLE STATUS FROM `$db`", "name");
         is(
             lc($rows->{$tbl}->{engine}),
@@ -242,7 +242,7 @@ sub test_alter_table {
 
         foreach my $tbl ( @$orig_tbls ) {
             my $fks = $tp->get_fks(
-                $tp->get_create_table($master_dbh, $db, $tbl->[0]));
+                $tp->get_create_table($source_dbh, $db, $tbl->[0]));
 
             # The tool does not use the same/original fk name,
             # it appends a single _.  So we need to strip this
@@ -285,7 +285,7 @@ sub test_alter_table {
         warn $output;
     }
 
-    my $new_triggers = $master_dbh->selectall_arrayref($triggers_sql);
+    my $new_triggers = $source_dbh->selectall_arrayref($triggers_sql);
     is_deeply(
         $orig_triggers,
         $new_triggers,
@@ -313,7 +313,7 @@ test_alter_table(
     ],
 );
 
-$rows = $master_dbh->selectall_arrayref( "SELECT * FROM test.aaa");
+$rows = $source_dbh->selectall_arrayref( "SELECT * FROM test.aaa");
 my $want = [
     [ 1, 'a', 1, undef ],
     [ 2, 'b', 2, undef ],
@@ -332,6 +332,6 @@ is_deeply(
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

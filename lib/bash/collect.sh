@@ -301,7 +301,11 @@ collect_mysql_data_loop() {
       (echo $ts; ps_prepared_statements "$d/prepared_statements.isrunnning") >> "$d/$p-prepared-statements" &
    fi
 
-   slave_status "$d/$p-slave-status" "${mysql_version}"
+   local replica_name='replica'
+   if [ "${mysql_version}" '<' "8.1" ]; then
+      replica_name="slave"
+   fi
+   replica_status "$d/$p-${replica_name}-status" "${mysql_version}"
 }
 
 collect_system_data_loop() {
@@ -600,14 +604,13 @@ ps_prepared_statements() {
    fi
 }
 
-slave_status() {
+replica_status() {
    local outfile=$1
    local mysql_version=$2
 
+   local sql="SHOW REPLICA STATUS\G"
    if [ "${mysql_version}" '<' "8.1" ]; then
-      local sql="SHOW SLAVE STATUS\G"
-   else
-      local sql="SHOW REPLICA STATUS\G"
+      sql="SHOW SLAVE STATUS\G"
    fi
 
    echo -e "\n$sql\n" >> $outfile

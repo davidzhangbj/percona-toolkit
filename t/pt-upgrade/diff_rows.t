@@ -21,10 +21,10 @@ require "$trunk/bin/pt-upgrade";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => "Cannot connect to sandbox master";
+   plan skip_all => "Cannot connect to sandbox source";
 }
 
 sub test_diff {
@@ -219,7 +219,7 @@ test_diff (
 # pt-upgrade reports differences on NULL
 # #############################################################################
 
-$sb->load_file('master', "t/pt-upgrade/samples/007/tables.sql");
+$sb->load_file('source', "t/pt-upgrade/samples/007/tables.sql");
 
 test_diff(
    name   => 'Bug 1168434: no diff with NULL',

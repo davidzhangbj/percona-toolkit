@@ -19,10 +19,10 @@ require "$trunk/bin/pt-archiver";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 my $output;
@@ -33,7 +33,7 @@ $sb->wipe_clean($dbh);
 $sb->create_dbs($dbh, ['test']);
 
 # Test --bulk-insert
-$sb->load_file('master', 't/pt-archiver/samples/pt-2279.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2279.sql');
 
 $output = output(
    sub { pt_archiver::main(qw(--limit 50 --bulk-insert),
@@ -49,7 +49,7 @@ unlike(
 ) or diag($output);
 
 # Test --file
-$sb->load_file('master', 't/pt-archiver/samples/pt-2279.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2279.sql');
 
 $output = output(
    sub { pt_archiver::main(qw(--limit 50),

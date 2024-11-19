@@ -112,7 +112,7 @@ sub find_cluster_nodes {
          # If there wasn't a port, that means that this bug
          # https://bugs.launchpad.net/percona-toolkit/+bug/1082406
          # isn't fixed on this version of PXC. We tried using the
-         # master's port, but that didn't work. So try again, using
+         # source's port, but that didn't work. So try again, using
          # the default port.
          if ( !$port && $dsn->{P} != 3306 ) {
             $address .= ":3306";
@@ -190,31 +190,31 @@ sub autodetect_nodes {
       seen_ids => $seen_ids
    );
 
-   my $new_slaves = [];
+   my $new_replicas = [];
    foreach my $node (@$new_nodes) {
-      my $node_slaves = $ms->get_slaves(
+      my $node_replicas = $ms->get_replicas(
          dbh      => $node->dbh(),
          dsn      => $node->dsn(),
          make_cxn => $make_cxn,
       );
-      push @$new_slaves, @$node_slaves;
+      push @$new_replicas, @$node_replicas;
    }
 
-   $new_slaves = $self->remove_duplicate_cxns(
-      cxns     => $new_slaves,
+   $new_replicas = $self->remove_duplicate_cxns(
+      cxns     => $new_replicas,
       seen_ids => $seen_ids
    );
 
-   # If some of the new slaves is a cluster node, autodetect new nodes
+   # If some of the new replicas is a cluster node, autodetect new nodes
    # from there too.
-   my @new_slave_nodes = grep { $self->is_cluster_node($_) } @$new_slaves;
+   my @new_replica_nodes = grep { $self->is_cluster_node($_) } @$new_replicas;
 
-   my $slaves_of_slaves = $self->autodetect_nodes(
+   my $replicas_of_replicas = $self->autodetect_nodes(
          %args,
-         nodes => \@new_slave_nodes,
+         nodes => \@new_replica_nodes,
    );
 
-   my @autodetected_nodes = ( @$new_nodes, @$new_slaves, @$slaves_of_slaves );
+   my @autodetected_nodes = ( @$new_nodes, @$new_replicas, @$replicas_of_replicas );
    return \@autodetected_nodes;
 }
 

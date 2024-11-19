@@ -17,7 +17,7 @@ require "$trunk/bin/pt-heartbeat";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 my ($output, $exist_status) = full_output(
    sub {

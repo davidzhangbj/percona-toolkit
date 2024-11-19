@@ -761,7 +761,7 @@ section () {
 }
 
 NAME_VAL_LEN=12
-name_val () {
+name_val() {
    printf "%+*s | %s\n" "${NAME_VAL_LEN}" "$1" "$2"
 }
 
@@ -787,7 +787,7 @@ shorten() {
    '
 }
 
-group_concat () {
+group_concat() {
    sed -e '{H; $!d;}' -e 'x' -e 's/\n[[:space:]]*\([[:digit:]]*\)[[:space:]]*/, \1x/g' -e 's/[[:space:]][[:space:]]*/ /g' -e 's/, //' "${1}"
 }
 
@@ -905,6 +905,8 @@ collect_system_data () { local PTFUNCNAME=collect_system_data;
    fi
 
    fio_status_minus_a "$data_dir/fusion-io_card"
+
+   cat /sys/kernel/mm/transparent_hugepage/enabled >"$data_dir/transparent_hugepage" 2>/dev/null
 
    for file in $data_dir/*; do
       [ "$file" = "vmstat" ] && continue
@@ -2338,23 +2340,21 @@ report_system_summary () { local PTFUNCNAME=report_system_summary;
                                        "$platform"
 
    section "Memory management"
-   report_transparent_huge_pages
+   report_transparent_huge_pages "$data_dir/transparent_hugepage"
 
    section "The End"
 }
 
 report_transparent_huge_pages () {
+   local file="$1"
 
-  if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
-    CONTENT_TRANSHP=$(</sys/kernel/mm/transparent_hugepage/enabled)
-    STATUS_THP_SYSTEM=$(echo $CONTENT_TRANSHP | grep -cv '\[never\]')
-  fi
-  if [ $STATUS_THP_SYSTEM = 0 ]; then
-    echo "Transparent huge pages are currently disabled on the system."
-  else
-    echo "Transparent huge pages are enabled."
-  fi
+   [ -e "$file" ] || return
 
+   if [ $(grep -cv '\[never\]' $file) = 0 ]; then
+      echo "Transparent huge pages are currently disabled on the system."
+   else
+      echo "Transparent huge pages are enabled."
+   fi
 }
 
 # ###########################################################################

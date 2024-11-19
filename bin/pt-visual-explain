@@ -18,6 +18,7 @@ BEGIN {
       OptionParser
       DSNParser
       Daemon
+      VersionParser
    ));
 }
 
@@ -1814,7 +1815,7 @@ if ( PTDEBUG ) {
 # ###########################################################################
 # DSNParser package
 # This package is a copy without comments from the original.  The original
-# with comments and its test file can be found in the Bazaar repository at,
+# with comments and its test file can be found in the GitHub repository at,
 #   lib/DSNParser.pm
 #   t/lib/DSNParser.t
 # See https://github.com/percona/percona-toolkit for more information.
@@ -1989,7 +1990,7 @@ sub get_cxn_params {
       $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
          . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
                      grep { defined $info->{$_} }
-                     qw(F h P S A))
+                     qw(F h P S A s))
          . ';mysql_read_default_group=client'
          . ($info->{L} ? ';mysql_local_infile=1' : '');
    }
@@ -2069,21 +2070,48 @@ sub get_dbh {
    if ( $cxn_string =~ m/mysql/i ) {
       my $sql;
 
-      if ( my ($charset) = $cxn_string =~ m/charset=([\w]+)/ ) {
+      my ($charset) = $cxn_string =~ m/charset=([\w]+)/;
+      if ( $charset ) {
          $sql = qq{/*!40101 SET NAMES "$charset"*/};
          PTDEBUG && _d($dbh, $sql);
          eval { $dbh->do($sql) };
          if ( $EVAL_ERROR ) {
             die "Error setting NAMES to $charset: $EVAL_ERROR";
          }
-         PTDEBUG && _d('Enabling charset for STDOUT');
-         if ( $charset eq 'utf8' ) {
-            binmode(STDOUT, ':utf8')
-               or die "Can't binmode(STDOUT, ':utf8'): $OS_ERROR";
+      }
+      else {
+         my ($mysql_version) = eval { $dbh->selectrow_array('SELECT VERSION()') };
+         if ( $EVAL_ERROR ) {
+            die "Cannot get MySQL version: $EVAL_ERROR";
          }
-         else {
-            binmode(STDOUT) or die "Can't binmode(STDOUT): $OS_ERROR";
+         my (undef, $character_set_server) = eval { $dbh->selectrow_array("SHOW VARIABLES LIKE 'character_set_server'") };
+         if ( $EVAL_ERROR ) {
+            die "Cannot get MySQL var character_set_server: $EVAL_ERROR";
          }
+
+         if ( $mysql_version =~ m/^(\d+)\.(\d)\.(\d+).*/ ) {
+            if ( $1 >= 8 && $character_set_server =~ m/^utf8/ ) {
+               $dbh->{mysql_enable_utf8} = 1;
+               $charset = $character_set_server;
+               my $msg = "MySQL version $mysql_version >= 8 and character_set_server = $character_set_server\n".
+                        "Setting: SET NAMES $character_set_server";
+               PTDEBUG && _d($msg);
+               eval { $dbh->do("SET NAMES '$character_set_server'") };
+               if ( $EVAL_ERROR ) {
+                  die "Cannot SET NAMES $character_set_server: $EVAL_ERROR";
+               }
+            }
+         }
+      }
+      PTDEBUG && _d('Enabling charset for STDOUT');
+      if ( $charset && $charset =~ m/^utf8/ ) {
+         binmode(STDOUT, ':utf8')
+            or die "Can't binmode(STDOUT, ':utf8'): $OS_ERROR";
+         binmode(STDERR, ':utf8')
+            or die "Can't binmode(STDERR, ':utf8'): $OS_ERROR";
+      }
+      else {
+         binmode(STDOUT) or die "Can't binmode(STDOUT): $OS_ERROR";
       }
 
       if ( my $vars = $self->prop('set-vars') ) {
@@ -2108,28 +2136,6 @@ sub get_dbh {
            . ($sql_mode ? " and $sql_mode" : '')
            . ": $EVAL_ERROR";
       }
-   }
-   my ($mysql_version) = eval { $dbh->selectrow_array('SELECT VERSION()') };
-   if ($EVAL_ERROR) {
-       die "Cannot get MySQL version: $EVAL_ERROR";
-   }
-
-   my (undef, $character_set_server) = eval { $dbh->selectrow_array("SHOW VARIABLES LIKE 'character_set_server'") };
-   if ($EVAL_ERROR) {
-       die "Cannot get MySQL var character_set_server: $EVAL_ERROR";
-   }
-
-   if ($mysql_version =~ m/^(\d+)\.(\d)\.(\d+).*/) {
-       if ($1 >= 8 && $character_set_server =~ m/^utf8/) {
-           $dbh->{mysql_enable_utf8} = 1;
-           my $msg = "MySQL version $mysql_version >= 8 and character_set_server = $character_set_server\n".
-                     "Setting: SET NAMES $character_set_server";
-           PTDEBUG && _d($msg);
-           eval { $dbh->do("SET NAMES 'utf8mb4'") };
-           if ($EVAL_ERROR) {
-               die "Cannot SET NAMES $character_set_server: $EVAL_ERROR";
-           }
-       }
    }
 
    PTDEBUG && _d('DBH info: ',
@@ -2259,7 +2265,7 @@ sub _d {
 # ###########################################################################
 # Daemon package
 # This package is a copy without comments from the original.  The original
-# with comments and its test file can be found in the Bazaar repository at,
+# with comments and its test file can be found in the GitHub repository at,
 #   lib/Daemon.pm
 #   t/lib/Daemon.t
 # See https://github.com/percona/percona-toolkit for more information.
@@ -2270,157 +2276,225 @@ package Daemon;
 use strict;
 use warnings FATAL => 'all';
 use English qw(-no_match_vars);
+
 use constant PTDEBUG => $ENV{PTDEBUG} || 0;
 
 use POSIX qw(setsid);
+use Fcntl qw(:DEFAULT);
 
 sub new {
-   my ( $class, %args ) = @_;
-   foreach my $arg ( qw(o) ) {
-      die "I need a $arg argument" unless $args{$arg};
-   }
-   my $o = $args{o};
+   my ($class, %args) = @_;
    my $self = {
-      o        => $o,
-      log_file => $o->has('log') ? $o->get('log') : undef,
-      PID_file => $o->has('pid') ? $o->get('pid') : undef,
+      log_file       => $args{log_file},
+      pid_file       => $args{pid_file},
+      daemonize      => $args{daemonize},
+      force_log_file => $args{force_log_file},
+      parent_exit    => $args{parent_exit},
+      pid_file_owner => 0,
+      utf8           => $args{utf8} // 0,
    };
-
-   check_PID_file(undef, $self->{PID_file});
-
-   PTDEBUG && _d('Daemonized child will log to', $self->{log_file});
    return bless $self, $class;
 }
 
-sub daemonize {
-   my ( $self ) = @_;
+sub run {
+   my ($self) = @_;
 
-   PTDEBUG && _d('About to fork and daemonize');
-   defined (my $pid = fork()) or die "Cannot fork: $OS_ERROR";
-   if ( $pid ) {
-      PTDEBUG && _d('Parent PID', $PID, 'exiting after forking child PID',$pid);
-      exit;
-   }
+   my $daemonize      = $self->{daemonize};
+   my $pid_file       = $self->{pid_file};
+   my $log_file       = $self->{log_file};
+   my $force_log_file = $self->{force_log_file};
+   my $parent_exit    = $self->{parent_exit};
+   my $utf8           = $self->{utf8};
 
-   PTDEBUG && _d('Daemonizing child PID', $PID);
-   $self->{PID_owner} = $PID;
-   $self->{child}     = 1;
+   PTDEBUG && _d('Starting daemon');
 
-   POSIX::setsid() or die "Cannot start a new session: $OS_ERROR";
-   chdir '/'       or die "Cannot chdir to /: $OS_ERROR";
-
-   $self->_make_PID_file();
-
-   $OUTPUT_AUTOFLUSH = 1;
-
-   PTDEBUG && _d('Redirecting STDIN to /dev/null');
-   close STDIN;
-   open  STDIN, '/dev/null'
-      or die "Cannot reopen STDIN to /dev/null: $OS_ERROR";
-
-   if ( $self->{log_file} ) {
-      PTDEBUG && _d('Redirecting STDOUT and STDERR to', $self->{log_file});
-      close STDOUT;
-      open  STDOUT, '>>', $self->{log_file}
-         or die "Cannot open log file $self->{log_file}: $OS_ERROR";
-
-      close STDERR;
-      open  STDERR, ">&STDOUT"
-         or die "Cannot dupe STDERR to STDOUT: $OS_ERROR";
-   }
-   else {
-      if ( -t STDOUT ) {
-         PTDEBUG && _d('No log file and STDOUT is a terminal;',
-            'redirecting to /dev/null');
-         close STDOUT;
-         open  STDOUT, '>', '/dev/null'
-            or die "Cannot reopen STDOUT to /dev/null: $OS_ERROR";
-      }
-      if ( -t STDERR ) {
-         PTDEBUG && _d('No log file and STDERR is a terminal;',
-            'redirecting to /dev/null');
-         close STDERR;
-         open  STDERR, '>', '/dev/null'
-            or die "Cannot reopen STDERR to /dev/null: $OS_ERROR";
-      }
-   }
-
-   return;
-}
-
-sub check_PID_file {
-   my ( $self, $file ) = @_;
-   my $PID_file = $self ? $self->{PID_file} : $file;
-   PTDEBUG && _d('Checking PID file', $PID_file);
-   if ( $PID_file && -f $PID_file ) {
-      my $pid;
+   if ( $pid_file ) {
       eval {
-         chomp($pid = (slurp_file($PID_file) || ''));
+         $self->_make_pid_file(
+            pid      => $PID,  # parent's pid
+            pid_file => $pid_file,
+         );
       };
-      if ( $EVAL_ERROR ) {
-         die "The PID file $PID_file already exists but it cannot be read: "
-            . $EVAL_ERROR;
+      die "$EVAL_ERROR\n" if $EVAL_ERROR;
+      if ( !$daemonize ) {
+         $self->{pid_file_owner} = $PID;  # parent's pid
       }
-      PTDEBUG && _d('PID file exists; it contains PID', $pid);
-      if ( $pid ) {
-         my $pid_is_alive = kill 0, $pid;
-         if ( $pid_is_alive ) {
-            die "The PID file $PID_file already exists "
-               . " and the PID that it contains, $pid, is running";
+   }
+
+   if ( $daemonize ) {
+      defined (my $child_pid = fork()) or die "Cannot fork: $OS_ERROR";
+      if ( $child_pid ) {
+         PTDEBUG && _d('Forked child', $child_pid);
+         $parent_exit->($child_pid) if $parent_exit;
+         exit 0;
+      }
+
+      POSIX::setsid() or die "Cannot start a new session: $OS_ERROR";
+      chdir '/'       or die "Cannot chdir to /: $OS_ERROR";
+
+      if ( $pid_file ) {
+         $self->_update_pid_file(
+            pid      => $PID,  # child's pid
+            pid_file => $pid_file,
+         );
+         $self->{pid_file_owner} = $PID;
+      }
+   }
+
+   if ( $daemonize || $force_log_file ) {
+      PTDEBUG && _d('Redirecting STDIN to /dev/null');
+      close STDIN;
+      open  STDIN, '/dev/null'
+         or die "Cannot reopen STDIN to /dev/null: $OS_ERROR";
+      if ( $log_file ) {
+         PTDEBUG && _d('Redirecting STDOUT and STDERR to', $log_file);
+         close STDOUT;
+         open  STDOUT, '>>', $log_file
+            or die "Cannot open log file $log_file: $OS_ERROR";
+         if ( $utf8 ) {
+            binmode(STDOUT, ':utf8')
+               or die "Can't binmode(STDOUT, ':utf8'): $OS_ERROR";
          }
-         else {
-            warn "Overwriting PID file $PID_file because the PID that it "
-               . "contains, $pid, is not running";
+
+
+         close STDERR;
+         open  STDERR, ">&STDOUT"
+            or die "Cannot dupe STDERR to STDOUT: $OS_ERROR";
+         if ( $utf8 ) {
+            binmode(STDERR, ':utf8')
+               or die "Can't binmode(STDERR, ':utf8'): $OS_ERROR";
          }
       }
       else {
-         die "The PID file $PID_file already exists but it does not "
-            . "contain a PID";
+         if ( -t STDOUT ) {
+            PTDEBUG && _d('No log file and STDOUT is a terminal;',
+               'redirecting to /dev/null');
+            close STDOUT;
+            open  STDOUT, '>', '/dev/null'
+               or die "Cannot reopen STDOUT to /dev/null: $OS_ERROR";
+         }
+         if ( -t STDERR ) {
+            PTDEBUG && _d('No log file and STDERR is a terminal;',
+               'redirecting to /dev/null');
+            close STDERR;
+            open  STDERR, '>', '/dev/null'
+               or die "Cannot reopen STDERR to /dev/null: $OS_ERROR";
+         }
+      }
+
+      $OUTPUT_AUTOFLUSH = 1;
+   }
+
+   PTDEBUG && _d('Daemon running');
+   return;
+}
+
+sub _make_pid_file {
+   my ($self, %args) = @_;
+   my @required_args = qw(pid pid_file);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   };
+   my $pid      = $args{pid};
+   my $pid_file = $args{pid_file};
+
+   eval {
+      sysopen(PID_FH, $pid_file, O_RDWR|O_CREAT|O_EXCL) or die $OS_ERROR;
+      print PID_FH $PID, "\n";
+      close PID_FH;
+   };
+   if ( my $e = $EVAL_ERROR ) {
+      if ( $e =~ m/file exists/i ) {
+         my $old_pid = $self->_check_pid_file(
+            pid_file => $pid_file,
+            pid      => $PID,
+         );
+         if ( $old_pid ) {
+            warn "Overwriting PID file $pid_file because PID $old_pid "
+               . "is not running.\n";
+         }
+         $self->_update_pid_file(
+            pid      => $PID,
+            pid_file => $pid_file
+         );
+      }
+      else {
+         die "Error creating PID file $pid_file: $e\n";
       }
    }
-   else {
-      PTDEBUG && _d('No PID file');
-   }
+
    return;
 }
 
-sub make_PID_file {
-   my ( $self ) = @_;
-   if ( exists $self->{child} ) {
-      die "Do not call Daemon::make_PID_file() for daemonized scripts";
-   }
-   $self->_make_PID_file();
-   $self->{PID_owner} = $PID;
-   return;
-}
+sub _check_pid_file {
+   my ($self, %args) = @_;
+   my @required_args = qw(pid_file pid);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   };
+   my $pid_file = $args{pid_file};
+   my $pid      = $args{pid};
 
-sub _make_PID_file {
-   my ( $self ) = @_;
+   PTDEBUG && _d('Checking if PID in', $pid_file, 'is running');
 
-   my $PID_file = $self->{PID_file};
-   if ( !$PID_file ) {
-      PTDEBUG && _d('No PID file to create');
+   if ( ! -f $pid_file ) {
+      PTDEBUG && _d('PID file', $pid_file, 'does not exist');
       return;
    }
 
-   $self->check_PID_file();
+   open my $fh, '<', $pid_file
+      or die "Error opening $pid_file: $OS_ERROR";
+   my $existing_pid = do { local $/; <$fh> };
+   chomp($existing_pid) if $existing_pid;
+   close $fh
+      or die "Error closing $pid_file: $OS_ERROR";
 
-   open my $PID_FH, '>', $PID_file
-      or die "Cannot open PID file $PID_file: $OS_ERROR";
-   print $PID_FH $PID
-      or die "Cannot print to PID file $PID_file: $OS_ERROR";
-   close $PID_FH
-      or die "Cannot close PID file $PID_file: $OS_ERROR";
+   if ( $existing_pid ) {
+      if ( $existing_pid == $pid ) {
+         warn "The current PID $pid already holds the PID file $pid_file\n";
+         return;
+      }
+      else {
+         PTDEBUG && _d('Checking if PID', $existing_pid, 'is running');
+         my $pid_is_alive = kill 0, $existing_pid;
+         if ( $pid_is_alive ) {
+            die "PID file $pid_file exists and PID $existing_pid is running\n";
+         }
+      }
+   }
+   else {
+      die "PID file $pid_file exists but it is empty.  Remove the file "
+         . "if the process is no longer running.\n";
+   }
 
-   PTDEBUG && _d('Created PID file:', $self->{PID_file});
+   return $existing_pid;
+}
+
+sub _update_pid_file {
+   my ($self, %args) = @_;
+   my @required_args = qw(pid pid_file);
+   foreach my $arg ( @required_args ) {
+      die "I need a $arg argument" unless $args{$arg};
+   };
+   my $pid      = $args{pid};
+   my $pid_file = $args{pid_file};
+
+   open my $fh, '>', $pid_file
+      or die "Cannot open $pid_file: $OS_ERROR";
+   print { $fh } $pid, "\n"
+      or die "Cannot print to $pid_file: $OS_ERROR";
+   close $fh
+      or warn "Cannot close $pid_file: $OS_ERROR";
+
    return;
 }
 
-sub _remove_PID_file {
-   my ( $self ) = @_;
-   if ( $self->{PID_file} && -f $self->{PID_file} ) {
-      unlink $self->{PID_file}
-         or warn "Cannot remove PID file $self->{PID_file}: $OS_ERROR";
+sub remove_pid_file {
+   my ($self, $pid_file) = @_;
+   $pid_file ||= $self->{pid_file};
+   if ( $pid_file && -f $pid_file ) {
+      unlink $self->{pid_file}
+         or warn "Cannot remove PID file $pid_file: $OS_ERROR";
       PTDEBUG && _d('Removed PID file');
    }
    else {
@@ -2430,18 +2504,13 @@ sub _remove_PID_file {
 }
 
 sub DESTROY {
-   my ( $self ) = @_;
+   my ($self) = @_;
 
-   $self->_remove_PID_file() if ($self->{PID_owner} || 0) == $PID;
+   if ( $self->{pid_file_owner} == $PID ) {
+      $self->remove_pid_file();
+   }
 
    return;
-}
-
-sub slurp_file {
-   my ($file) = @_;
-   return unless $file;
-   open my $fh, "<", $file or die "Cannot open $file: $OS_ERROR";
-   return do { local $/; <$fh> };
 }
 
 sub _d {
@@ -2456,6 +2525,198 @@ sub _d {
 }
 # ###########################################################################
 # End Daemon package
+# ###########################################################################
+
+# ###########################################################################
+# VersionParser package
+# This package is a copy without comments from the original.  The original
+# with comments and its test file can be found in the GitHub repository at,
+#   lib/VersionParser.pm
+#   t/lib/VersionParser.t
+# See https://github.com/percona/percona-toolkit for more information.
+# ###########################################################################
+{
+package VersionParser;
+
+use Lmo;
+use Scalar::Util qw(blessed);
+use English qw(-no_match_vars);
+use constant PTDEBUG => $ENV{PTDEBUG} || 0;
+
+use overload (
+   '""'     => "version",
+   '<=>'    => "cmp",
+   'cmp'    => "cmp",
+   fallback => 1,
+);
+
+use Carp ();
+
+has major => (
+    is       => 'ro',
+    isa      => 'Int',
+    required => 1,
+);
+
+has [qw( minor revision )] => (
+    is  => 'ro',
+    isa => 'Num',
+);
+
+has flavor => (
+    is      => 'ro',
+    isa     => 'Str',
+    default => sub { 'Unknown' },
+);
+
+has innodb_version => (
+    is      => 'ro',
+    isa     => 'Str',
+    default => sub { 'NO' },
+);
+
+sub series {
+   my $self = shift;
+   return $self->_join_version($self->major, $self->minor);
+}
+
+sub version {
+   my $self = shift;
+   return $self->_join_version($self->major, $self->minor, $self->revision);
+}
+
+sub is_in {
+   my ($self, $target) = @_;
+
+   return $self eq $target;
+}
+
+sub _join_version {
+    my ($self, @parts) = @_;
+
+    return join ".", map { my $c = $_; $c =~ s/^0\./0/; $c } grep defined, @parts;
+}
+sub _split_version {
+   my ($self, $str) = @_;
+   my @version_parts = map { s/^0(?=\d)/0./; $_ } $str =~ m/(\d+)/g;
+   return @version_parts[0..2];
+}
+
+sub normalized_version {
+   my ( $self ) = @_;
+   my $result = sprintf('%d%02d%02d', map { $_ || 0 } $self->major,
+                                                      $self->minor,
+                                                      $self->revision);
+   PTDEBUG && _d($self->version, 'normalizes to', $result);
+   return $result;
+}
+
+sub comment {
+   my ( $self, $cmd ) = @_;
+   my $v = $self->normalized_version();
+
+   return "/*!$v $cmd */"
+}
+
+my @methods = qw(major minor revision);
+sub cmp {
+   my ($left, $right) = @_;
+   my $right_obj = (blessed($right) && $right->isa(ref($left)))
+                   ? $right
+                   : ref($left)->new($right);
+
+   my $retval = 0;
+   for my $m ( @methods ) {
+      last unless defined($left->$m) && defined($right_obj->$m);
+      $retval = $left->$m <=> $right_obj->$m;
+      last if $retval;
+   }
+   return $retval;
+}
+
+sub BUILDARGS {
+   my $self = shift;
+
+   if ( @_ == 1 ) {
+      my %args;
+      if ( blessed($_[0]) && $_[0]->can("selectrow_hashref") ) {
+         PTDEBUG && _d("VersionParser got a dbh, trying to get the version");
+         my $dbh = $_[0];
+         local $dbh->{FetchHashKeyName} = 'NAME_lc';
+         my $query = eval {
+            $dbh->selectall_arrayref(q/SHOW VARIABLES LIKE 'version%'/, { Slice => {} })
+         };
+         if ( $query ) {
+            $query = { map { $_->{variable_name} => $_->{value} } @$query };
+            @args{@methods} = $self->_split_version($query->{version});
+            $args{flavor} = delete $query->{version_comment}
+                  if $query->{version_comment};
+         }
+         elsif ( eval { ($query) = $dbh->selectrow_array(q/SELECT VERSION()/) } ) {
+            @args{@methods} = $self->_split_version($query);
+         }
+         else {
+            Carp::confess("Couldn't get the version from the dbh while "
+                        . "creating a VersionParser object: $@");
+         }
+         $args{innodb_version} = eval { $self->_innodb_version($dbh) };
+      }
+      elsif ( !ref($_[0]) ) {
+         @args{@methods} = $self->_split_version($_[0]);
+      }
+
+      for my $method (@methods) {
+         delete $args{$method} unless defined $args{$method};
+      }
+      @_ = %args if %args;
+   }
+
+   return $self->SUPER::BUILDARGS(@_);
+}
+
+sub _innodb_version {
+   my ( $self, $dbh ) = @_;
+   return unless $dbh;
+   my $innodb_version = "NO";
+
+   my ($innodb) =
+      grep { $_->{engine} =~ m/InnoDB/i }
+      map  {
+         my %hash;
+         @hash{ map { lc $_ } keys %$_ } = values %$_;
+         \%hash;
+      }
+      @{ $dbh->selectall_arrayref("SHOW ENGINES", {Slice=>{}}) };
+   if ( $innodb ) {
+      PTDEBUG && _d("InnoDB support:", $innodb->{support});
+      if ( $innodb->{support} =~ m/YES|DEFAULT/i ) {
+         my $vars = $dbh->selectrow_hashref(
+            "SHOW VARIABLES LIKE 'innodb_version'");
+         $innodb_version = !$vars ? "BUILTIN"
+                         :          ($vars->{Value} || $vars->{value});
+      }
+      else {
+         $innodb_version = $innodb->{support};  # probably DISABLED or NO
+      }
+   }
+
+   PTDEBUG && _d("InnoDB version:", $innodb_version);
+   return $innodb_version;
+}
+
+sub _d {
+   my ($package, undef, $line) = caller 0;
+   @_ = map { (my $temp = $_) =~ s/\n/\n# /g; $temp; }
+        map { defined $_ ? $_ : 'undef' }
+        @_;
+   print STDERR "# $package:$line $PID ", join(' ', @_), "\n";
+}
+
+no Lmo;
+1;
+}
+# ###########################################################################
+# End VersionParser package
 # ###########################################################################
 
 # ###########################################################################
@@ -2495,12 +2756,15 @@ sub main {
    # If --pid, check it first since we'll die if it already exits.
    # ########################################################################
    my $daemon;
-   if ( $o->get('pid') ) {
+   if ( my $pid_file = $o->get('pid') ) {
       # We're not daemoninzing, it just handles PID stuff.  Keep $daemon
       # in the the scope of main() because when it's destroyed it automatically
       # removes the PID file.
-      $daemon = new Daemon(o=>$o);
-      $daemon->make_PID_file();
+      $daemon = new Daemon(
+         pid_file  => $pid_file,
+         daemonize => 0,
+      );
+      $daemon->run();
    }
 
    # #######################################################################
@@ -2518,7 +2782,12 @@ sub main {
       my $dsn = $dp->parse_options($o);
       my $dbh = $dp->get_dbh($dp->get_cxn_params($dsn), { AutoCommit => 1 } );
 
-      $text =~ s{^.*?select}{EXPLAIN /*!50115 PARTITIONS*/ SELECT}is;
+      my $vp = VersionParser->new($dbh);
+      if ( $vp->cmp('8.0') < 0 || $vp->flavor() =~ m/maria/i ) {
+         $text =~ s{^.*?select}{EXPLAIN /*!50115 PARTITIONS*/ SELECT}is;
+      } else {
+         $text =~ s{^.*?select}{EXPLAIN SELECT}is;
+      }
       $rows =  $dbh->selectall_arrayref($text, { Slice => {} } );
       $dbh->disconnect();
    }
@@ -2656,9 +2925,7 @@ bookmark lookup into the film_actor table.
 =back
 
 For more information on how to read EXPLAIN output, please see
-L<http://dev.mysql.com/doc/en/explain.html>, and this talk titled
-"MySQL query optimizer internals and upcoming features in v. 5.2":
-from Timour Katchaounov, one of the MySQL developers: L<http://goo.gl/VIWvo>
+L<http://dev.mysql.com/doc/en/explain.html>.
 
 =head1 MODULES
 
@@ -2693,13 +2960,11 @@ trying to figure out how this works, but otherwise this section will probably
 not make your life richer.
 
 The tree can be built by examining the id, select_type, and table columns of
-each row.  Here's what I know about them:
+each row.
 
 The id column is the sequential number of the select.  This does not indicate
 nesting; it just comes from counting SELECT from the left of the SQL statement.
-It's like capturing parentheses in a regular expression.  A UNION RESULT row
-doesn't have an id, because it isn't a SELECT.  The source code actually refers
-to UNIONs as a fake_lex, as I recall.
+It's like capturing parentheses in a regular expression.
 
 If two adjacent rows have the same id value, they are joined with the standard
 single-sweep multi-join method.
@@ -2749,7 +3014,7 @@ access to the temporary table that holds the result of the subquery whose id is
 N.  If it says <unionN,..N> it's the same thing, but it refers to the results it
 UNIONs together.
 
-Finally, order matters.  If a row's id is less than the one before it, I think
+Finally, order matters.  If a row's id is less than the one before it,
 that means it is dependent on something other than the one before it.  For
 example,
 
@@ -2765,7 +3030,7 @@ example,
  |  3 | SUBQUERY    | film_actor |
  |  2 | SUBQUERY    | film       |
 
-If the results were in order 2-3-4, I think that would mean 3 is a subquery of
+If the results were in order 2-3-4, that would mean 3 is a subquery of
 2, 4 is a subquery of 3.  As it is, this means 4 is a subquery of the nearest
 previous recent row with a smaller id, which is 1.  Likewise for 3 and 2.
 
@@ -2802,8 +3067,8 @@ following:
  | NULL | UNION RESULT | <union5,6> |
  | NULL | UNION RESULT | <union1,4> |
 
-This would be a lot easier to work with if it looked like this (I've
-bracketed the id on rows I moved):
+This would be a lot easier to work with if it looked like this (we've
+bracketed the id on rows we moved):
 
  | id   | select_type  | table      |
  +------+--------------+------------+
@@ -2819,7 +3084,7 @@ bracketed the id on rows I moved):
 
 In fact, why not re-number all the ids, so the PRIMARY row becomes 2, and so on?
 That would make it even easier to read.  Unfortunately that would also have the
-effect of destroying the meaning of the id column, which I think is important to
+effect of destroying the meaning of the id column, which is important to
 preserve in the final tree.  Also, though it makes it easier to read, it doesn't
 make it easier to manipulate programmatically; so it's fine to leave them
 numbered as they are.
@@ -2831,7 +3096,7 @@ the slice of rows that should be child nodes in the tree: you just look for the
 first row whose ID is the same as the first number in the table.
 
 The next question is how to find the last row that should be a child node of a
-UNION or DERIVED.   I'll start with DERIVED, because the solution makes UNION
+UNION or DERIVED.   We'll start with DERIVED, because the solution makes UNION
 easy.
 
 Consider how MySQL numbers the SELECTs sequentially according to their position
@@ -2871,14 +3136,14 @@ Here's the output of EXPLAIN:
  | NULL | UNION RESULT | <union3,5> |
  |  2   | DERIVED      | film       |
 
-The siblings all have id 1, and the middle one I care about is derived3.
-(Notice MySQL doesn't execute them in the order I defined them, which is fine).
-Now notice that MySQL prints out the rows in the opposite order I defined the
-subqueries: 6, 3, 2.  It always seems to do this, and there might be other
+The siblings all have id 1, and the middle one we care about is derived3.
+(Notice MySQL doesn't execute them in the order they are defined, which is fine).
+Now notice that MySQL prints out the rows in the opposite order the subqueries
+were defined: 6, 3, 2.  It always seems to do this, and there might be other
 methods of finding the scope boundaries including looking for the lower boundary
-of the next largest sibling, but this is a good enough heuristic.  I am forced
-to rely on it for non-DERIVED subqueries, so I rely on it here too.  Therefore,
-I decide that everything greater than or equal to 3 belongs to the DERIVED
+of the next largest sibling, but this is a good enough heuristic.  We are forced
+to rely on it for non-DERIVED subqueries, so we rely on it here too.  Therefore,
+we decide that everything greater than or equal to 3 belongs to the DERIVED
 scope.
 
 The rule for UNION is simple: they consume the entire enclosing scope, and to
@@ -2894,8 +3159,8 @@ the enclosing scope's boundaries, and the rest is easy.  Notice in the example
 above, the UNION is over <union3,5>, which includes the row with id 4 -- it
 includes every row between 3 and 5.
 
-Finally, there are non-derived subqueries to deal with as well.  In this case I
-can't look at siblings to find the end of the scope as I did for DERIVED.  I
+Finally, there are non-derived subqueries to deal with as well.  In this case we
+can't look at siblings to find the end of the scope as we did for DERIVED.  We
 have to trust that MySQL executes depth-first.  Here's an example:
 
  explain
@@ -2950,16 +3215,14 @@ select 4 came first.  In other words, if EXPLAIN looked like this,
  |  4 | DEPENDENT SUBQUERY | actor      |
 
 I would be forced to assume upon seeing select 3 that select 4 is a subquery
-of it, rather than just being the next sibling in the enclosing scope.  If this
-is ever wrong, then the algorithm is wrong, and I don't see what could be done
-about it.
+of it, rather than just being the next sibling in the enclosing scope.
 
 UNION is a little more complicated than just "the entire scope is a UNION,"
 because the UNION might itself be inside an enclosing scope that's only
 indicated by the first item inside the UNION.  There are only three kinds of
 enclosing scopes: UNION, DERIVED, and SUBQUERY.  A UNION can't enclose a UNION,
-and a DERIVED has its own "scope markers," but a SUBQUERY can wholly enclose a
-UNION, like this strange example on the empty table t1:
+and a DERIVED has its own "scope markers," but a SUBQUERY in earlier versions
+could wholly enclose a UNION, like this strange example on the empty table t1:
 
  explain select * from t1 where not exists(
     (select t11.i from t1 t11) union (select t12.i from t1 t12));
@@ -2974,12 +3237,8 @@ UNION, like this strange example on the empty table t1:
 
 The UNION's backward references might make it look like the UNION encloses the
 subquery, but studying the query makes it clear this isn't the case.  So when a
-UNION's first row says SUBQUERY, it is this special case.
-
-By the way, I don't fully understand this query plan; there are 4 numbered
-SELECT in the plan, but only 3 in the query.  The parens around the UNIONs are
-meaningful.  Removing them will make the EXPLAIN different.  Please tell me how
-and why this works if you know.
+UNION's first row says SUBQUERY, it is this special case that we cannot repeat
+starting from MySQL 5.7.
 
 Armed with this knowledge, it's possible to use recursion to turn the
 parent-child relationship between all the rows into a tree representing the
@@ -3011,8 +3270,7 @@ The execution plan looks like a depth-first traversal of this tree:
 
 The JOIN might not be a JOIN.  It might be a subquery, for example.  This comes
 from the type column of EXPLAIN.  The documentation says this is a "join type,"
-but I think "access type" is more accurate, because it's "how MySQL accesses
-rows."
+but "access type" may be more accurate, because it's "how MySQL accesses rows."
 
 pt-visual-explain decorates the tree significantly more than just turning
 rows into nodes.  Each node may get a series of transformations that turn it
@@ -3056,6 +3314,8 @@ first option on the command line.
 
 =item --connect
 
+short form: -c
+
 Treat input as a query, and obtain EXPLAIN output by connecting to a MySQL
 instance and running EXPLAIN on the query.  When this option is given,
 pt-visual-explain uses the other connection-specific options such as
@@ -3098,6 +3358,12 @@ Show help and exit.
 short form: -h; type: string
 
 Connect to host.
+
+=item --mysql_ssl
+
+short form: -s; type: int
+
+Create SSL MySQL connection.
 
 =item --password
 
@@ -3216,6 +3482,12 @@ Socket file to use for connection.
 dsn: user; copy: yes
 
 User for login if not current user.
+
+=item * s
+
+dsn: mysql_ssl; copy: yes
+
+Create SSL connection
 
 =back
 

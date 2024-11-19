@@ -20,15 +20,15 @@ require "$trunk/bin/pt-online-schema-change";
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
 
-my $dbh = $sb->get_dbh_for('master');
-my $slave_dbh = $sb->get_dbh_for('slave1');
-my $dsn = $sb->dsn_for("master");
+my $dbh = $sb->get_dbh_for('source');
+my $replica_dbh = $sb->get_dbh_for('replica1');
+my $dsn = $sb->dsn_for("source");
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
-elsif ( !$slave_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave';
+elsif ( !$replica_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica';
 }
 else {
    plan tests => 2;
@@ -41,7 +41,7 @@ my @args = (qw(--set-vars innodb_lock_wait_timeout=3));
 my $output;
 my $exit_status;
 
-$sb->load_file('master', "t/pt-online-schema-change/samples/pt-2048.sql");
+$sb->load_file('source', "t/pt-online-schema-change/samples/pt-2048.sql");
 
 my $orig_id;
 my $sql = 'SELECT @@server_id';

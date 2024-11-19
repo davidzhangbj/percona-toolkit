@@ -159,10 +159,11 @@ is(
 );
 
 use DSNParser;
+use VersionParser;
 use Sandbox;
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 SKIP: {
    skip 'Cannot connect to sandbox master', 1 unless $dbh;
    my $now = $dbh->selectall_arrayref('SELECT NOW()')->[0]->[0];

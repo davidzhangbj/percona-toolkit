@@ -15,13 +15,14 @@ use Sandbox;
 use PerconaTest;
 
 require "$trunk/bin/pt-query-digest";
+require VersionParser;
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 $dbh->do('drop database if exists food');
@@ -134,7 +135,7 @@ ok(
 # #############################################################################
 # Issue 1196: mk-query-digest --explain is broken
 # #############################################################################
-$sb->load_file('master', "t/pt-query-digest/samples/issue_1196.sql");
+$sb->load_file('source', "t/pt-query-digest/samples/issue_1196.sql");
 
 ok(
    no_diff(

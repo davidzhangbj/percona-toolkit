@@ -22,34 +22,34 @@ require "$trunk/bin/pt-table-sync";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave1_dbh = $sb->get_dbh_for('slave1'); 
-my $slave2_dbh = $sb->get_dbh_for('slave2'); 
+my $source_dbh = $sb->get_dbh_for('source');
+my $replica1_dbh = $sb->get_dbh_for('replica1'); 
+my $replica2_dbh = $sb->get_dbh_for('replica2'); 
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
-elsif ( !$slave1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave1';
+elsif ( !$replica1_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica1';
 }
-elsif ( !$slave1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave2';
+elsif ( !$replica1_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica2';
 }
 else {
    plan tests => 7;
 }
 
 my ($output, $status);
-my @args = ('h=127.0.0.1,P=12346,u=msandbox,p=msandbox', '--databases=pt_ts', '--sync-to-master', '--execute');
+my @args = ('h=127.0.0.1,P=12346,u=msandbox,p=msandbox', '--databases=pt_ts', '--sync-to-source', '--execute');
 
 # use lib/samples dir since the main change is in DSNParser
-$sb->load_file('master', "t/pt-table-sync/samples/pt-2309.sql");
+$sb->load_file('source', "t/pt-table-sync/samples/pt-2309.sql");
 
-$sb->wait_for_slaves();
+$sb->wait_for_replicas();
 
-$slave1_dbh->do("DELETE FROM pt_ts.test_table LIMIT 1000");
-$slave1_dbh->do("DELETE FROM pt_ts.test_table_char LIMIT 1000");
-$slave1_dbh->do("FLUSH TABLES");
+$replica1_dbh->do("DELETE FROM pt_ts.test_table LIMIT 1000");
+$replica1_dbh->do("DELETE FROM pt_ts.test_table_char LIMIT 1000");
+$replica1_dbh->do("FLUSH TABLES");
 
 # 1
 push(@args, ('--tables=test_table'));
@@ -64,10 +64,10 @@ unlike(
    'No "Cannot nibble table" error for binary data',
 ) or diag($output);
 
-$sb->wait_for_slaves();
+$sb->wait_for_replicas();
 
-my $source_rows = $master_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table");
-my $replica_rows = $slave1_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table");
+my $source_rows = $source_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table");
+my $replica_rows = $replica1_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table");
 
 is(
    $replica_rows->[0],
@@ -94,10 +94,10 @@ unlike(
    'No "Cannot nibble table" error for UUID in CHAR column',
 ) or diag($output);
 
-$sb->wait_for_slaves();
+$sb->wait_for_replicas();
 
-$source_rows = $master_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table_char");
-$replica_rows = $slave1_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table_char");
+$source_rows = $source_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table_char");
+$replica_rows = $replica1_dbh->selectrow_arrayref("SELECT COUNT(*) FROM pt_ts.test_table_char");
 
 is(
    $replica_rows->[0],
@@ -114,6 +114,6 @@ is(
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 exit;

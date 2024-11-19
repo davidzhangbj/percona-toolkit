@@ -19,16 +19,16 @@ require "$trunk/bin/pt-online-schema-change";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
+my $source_dbh = $sb->get_dbh_for('source');
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 # The sandbox servers run with lock_wait_timeout=3 and it's not dynamic
 # so we need to specify --set-vars innodb_lock_wait_timeout=3 else the
 # tool will die.
-my $master_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
+my $source_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
 my @args       = (qw(--set-vars innodb_lock_wait_timeout=3));
 my $sample     = "t/pt-online-schema-change/samples/";
 my $plugin     = "$trunk/$sample/plugins";
@@ -39,7 +39,7 @@ my $exit_status;
 # https://bugs.launchpad.net/percona-toolkit/+bug/1171653
 # 
 # ############################################################################
-$sb->load_file('master', "$sample/basic_no_fks.sql");
+$sb->load_file('source', "$sample/basic_no_fks.sql");
 
 # Should be greater than chunk-size and big enough, so plugin will trigger few times
 my $num_rows = 5000;
@@ -48,7 +48,7 @@ diag(`util/mysql_random_data_load --host=127.0.0.1 --port=12345 --user=msandbox 
 
 ($output, $exit_status) = full_output(
    sub { pt_online_schema_change::main(@args,
-      "$master_dsn,D=pt_osc,t=t",
+      "$source_dsn,D=pt_osc,t=t",
       "--alter", "CHARACTER SET utf8, MODIFY c CHAR(128) CHARACTER SET utf8",
       '--plugin', "$plugin/on_copy_rows_after_nibble.pm",
       '--execute') },
@@ -87,6 +87,6 @@ like(
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

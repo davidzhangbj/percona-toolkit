@@ -14,13 +14,14 @@ use Test::More;
 use ReportFormatter;
 use Transformers;
 use DSNParser;
+use VersionParser;
 use Sandbox;
 use CompareQueryTimes;
 use PerconaTest;
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
    plan skip_all => "Cannot connect to sandbox master";

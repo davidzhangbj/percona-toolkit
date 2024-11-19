@@ -74,7 +74,7 @@ section () {
 }
 
 NAME_VAL_LEN=12
-name_val () {
+name_val() {
    # We use $NAME_VAL_LEN here because the two summary tools, as well as
    # the tests, use different widths.
    printf "%+*s | %s\n" "${NAME_VAL_LEN}" "$1" "$2"
@@ -113,7 +113,7 @@ shorten() {
    '
 }
 
-group_concat () {
+group_concat() {
    sed -e '{H; $!d;}' -e 'x' -e 's/\n[[:space:]]*\([[:digit:]]*\)[[:space:]]*/, \1x/g' -e 's/[[:space:]][[:space:]]*/ /g' -e 's/, //' "${1}"
 }
 

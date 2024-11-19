@@ -16,13 +16,14 @@ use Time::HiRes qw(sleep);
 use PerconaTest;
 use DSNParser;
 use Sandbox;
+require VersionParser;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 my $cnf      = "/tmp/12345/my.sandbox.cnf";
@@ -719,15 +720,15 @@ cleanup();
 
 SKIP: {
 
-   skip "Only test on mysql 5.7" if ( $sandbox_version lt '5.7' );
+   skip "Only test on mysql 5.7+" if ( $sandbox_version lt '5.7' );
 
    sub start_thread {
       # this must run in a thread because we need to have an uncommitted transaction
       my ($dsn_opts) = @_;
       my $dp = new DSNParser(opts=>$dsn_opts);
       my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-      my $dbh = $sb->get_dbh_for('master');
-      $sb->load_file('master', "t/pt-stalk/samples/issue-1642751.sql");
+      my $dbh = $sb->get_dbh_for('source');
+      $sb->load_file('source', "t/pt-stalk/samples/issue-1642751.sql");
    }
    my $thr = threads->create('start_thread', $dsn_opts);
    $thr->detach();
@@ -745,13 +746,13 @@ SKIP: {
    like(
       $output,
       qr/ STATE: ACTIVE/,
-      "MySQL 5.7 ACTIVE transactions"
+      "MySQL 5.7+ ACTIVE transactions"
    );
           
    like(
       $output,
       qr/ STATE: COMMITTED/,
-      "MySQL 5.7 COMMITTED transactions"
+      "MySQL 5.7+ COMMITTED transactions"
    );
    
    cleanup();
@@ -759,60 +760,65 @@ SKIP: {
 
 SKIP: {
 
-   skip "Only test on mysql 5.7" if ( $sandbox_version lt '5.7' );
+   skip "Only test on mysql 5.7+" if ( $sandbox_version lt '5.7' );
 
-   my ($master1_dbh, $master1_dsn) = $sb->start_sandbox(
-      server => 'chan_master1',
-      type   => 'master',
+   my ($source1_dbh, $source1_dsn) = $sb->start_sandbox(
+      server => 'chan_source1',
+      type   => 'source',
    );
-   my ($master2_dbh, $master2_dsn) = $sb->start_sandbox(
-      server => 'chan_master2',
-      type   => 'master',
+   my ($source2_dbh, $source2_dsn) = $sb->start_sandbox(
+      server => 'chan_source2',
+      type   => 'source',
    );
-   my ($slave1_dbh, $slave1_dsn) = $sb->start_sandbox(
-      server => 'chan_slave1',
-      type   => 'master',
+   my ($replica1_dbh, $replica1_dsn) = $sb->start_sandbox(
+      server => 'chan_replica1',
+      type   => 'source',
    );
-   my $slave1_port = $sb->port_for('chan_slave1');
-   
-   $sb->load_file('chan_master1', "sandbox/gtid_on.sql", undef, no_wait => 1);
-   $sb->load_file('chan_master2', "sandbox/gtid_on.sql", undef, no_wait => 1);
-   $sb->load_file('chan_slave1', "sandbox/slave_channels_t.sql", undef, no_wait => 1);
+   my $replica1_port = $sb->port_for('chan_replica1');
 
-   my $slave_cnf = "/tmp/$slave1_port/my.sandbox.cnf";
-   my $cmd = "$trunk/bin/pt-stalk --no-stalk --iterations=1 --host=127.0.0.1 --port=$slave1_port --user=msandbox "
+   if ( $sandbox_version lt '8.1' ) {
+      $sb->load_file('chan_source1', "sandbox/gtid_on-legacy.sql", undef, no_wait => 1);
+      $sb->load_file('chan_source2', "sandbox/gtid_on-legacy.sql", undef, no_wait => 1);
+      $sb->load_file('chan_replica1', "sandbox/replica_channels_t-legacy.sql", undef, no_wait => 1);
+   } else {
+      $sb->load_file('chan_source1', "sandbox/gtid_on.sql", undef, no_wait => 1);
+      $sb->load_file('chan_source2', "sandbox/gtid_on.sql", undef, no_wait => 1);
+      $sb->load_file('chan_replica1', "sandbox/replica_channels_t.sql", undef, no_wait => 1);
+   }
+
+   my $replica_cnf = "/tmp/$replica1_port/my.sandbox.cnf";
+   my $cmd = "$trunk/bin/pt-stalk --no-stalk --iterations=1 --host=127.0.0.1 --port=$replica1_port --user=msandbox "
            . "--password=msandbox --sleep 0 --run-time=10 --dest $dest --log $log_file --iterations=1  "
-           . "--run-time=2 --pid $pid_file --defaults-file=$slave_cnf >$log_file 2>&1";
-   diag ($cmd);
+           . "--run-time=2 --pid $pid_file --defaults-file=$replica_cnf >$log_file 2>&1";
    system($cmd);
    sleep 5;
    PerconaTest::kill_program(pid_file => $pid_file);
    
-   $output = `cat $dest/*-slave-status 2>/dev/null`;
+   $output = `cat $dest/*-${replica_name}-status 2>/dev/null`;
    
    like(
       $output,
       qr/SERVICE_STATE: ON/,
-      "MySQL 5.7 SLAVE STATUS"
+      "MySQL 5.7+ REPLICA STATUS"
    ) or diag ($output);
-   $sb->stop_sandbox(qw(chan_master1 chan_master2 chan_slave1));
+   $sb->stop_sandbox(qw(chan_source1 chan_source2 chan_replica1));
 }
                                                                               
 SKIP: {
    skip "Only test on mysql 5.6" if ( $sandbox_version ne '5.6' );
 
-   my $slave1_port = $sb->port_for('slave1');
-   my $cmd = "$trunk/bin/pt-stalk --no-stalk --iterations=1 --host=127.0.0.1 --port=$slave1_port --user=msandbox "
+   my $replica1_port = $sb->port_for('replica1');
+   my $cmd = "$trunk/bin/pt-stalk --no-stalk --iterations=1 --host=127.0.0.1 --port=$replica1_port --user=msandbox "
            . "--password=msandbox --sleep 0 --run-time=10 --dest $dest --log $log_file --iterations=1  "
            . "--run-time=2  --pid $pid_file --defaults-file=$cnf >$log_file 2>&1";
-   system($cmd);                                                                 
-   sleep 5;                                                                      
-   PerconaTest::kill_program(pid_file => $pid_file);                             
-                                                                                 
-   $output = `cat $dest/*-slave-status 2>/dev/null`;                             
-                                                                                 
-   like(                                                                     
-      $output,                                                               
+   system($cmd); 
+   sleep 5; 
+   PerconaTest::kill_program(pid_file => $pid_file); 
+ 
+   $output = `cat $dest/*-${replica_name}-status 2>/dev/null`; 
+
+   like(
+      $output,
       qr/SHOW SLAVE STATUS/,                                                 
       "MySQL 5.6 SLAVE STATUS"                                               
    );
@@ -834,8 +840,8 @@ SKIP: {
       my ($dsn_opts) = @_;
       my $dp = new DSNParser(opts=>$dsn_opts);
       my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-      my $dbh = $sb->get_dbh_for('master');
-      $sb->load_file('master', "t/pt-stalk/samples/issue-1642750.sql");
+      my $dbh = $sb->get_dbh_for('source');
+      $sb->load_file('source', "t/pt-stalk/samples/issue-1642750.sql");
    }
    my $thr = threads->create('start_thread_1642750', $dsn_opts);
    $thr->detach();
@@ -878,8 +884,8 @@ sub start_thread_pt_1897_1 {
    my ($dsn_opts) = @_;
    my $dp = new DSNParser(opts=>$dsn_opts);
    my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-   my $dbh = $sb->get_dbh_for('master');
-   $sb->load_file('master', "t/pt-stalk/samples/PT-1897-1.sql");
+   my $dbh = $sb->get_dbh_for('source');
+   $sb->load_file('source', "t/pt-stalk/samples/PT-1897-1.sql");
 }
 my $thr1 = threads->create('start_thread_pt_1897_1', $dsn_opts);
 $thr1->detach();
@@ -892,8 +898,8 @@ sub start_thread_pt_1897_2 {
    my ($dsn_opts) = @_;
    my $dp = new DSNParser(opts=>$dsn_opts);
    my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-   my $dbh = $sb->get_dbh_for('master');
-   $sb->load_file('master', "t/pt-stalk/samples/PT-1897-2.sql");
+   my $dbh = $sb->get_dbh_for('source');
+   $sb->load_file('source', "t/pt-stalk/samples/PT-1897-2.sql");
 }
 my $thr2 = threads->create('start_thread_pt_1897_2', $dsn_opts);
 $thr2->detach();

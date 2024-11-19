@@ -17,10 +17,10 @@ require "$trunk/bin/pt-table-sync";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 else {
    plan tests => 3;
@@ -32,7 +32,7 @@ my $output;
 # Issue 965: mk-table-sync --trim can cause impossible WHERE, invalid SQL
 # #############################################################################
 $sb->wipe_clean($dbh);
-$sb->load_file('master', 't/pt-table-sync/samples/issue_965.sql');
+$sb->load_file('source', 't/pt-table-sync/samples/issue_965.sql');
 
 $output = output(
    sub {

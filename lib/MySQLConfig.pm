@@ -282,7 +282,7 @@ sub parse_mysqld {
    #   and boolean options {FALSE|TRUE}  Value (after reading options)
    #   --------------------------------- -----------------------------
    #   help                              TRUE
-   #   abort-slave-event-count           0
+   #   auto_increment_increment          1
    # So we search for that line of hyphens.
    #
    # It also ends with something like

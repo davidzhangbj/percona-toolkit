@@ -468,14 +468,14 @@ sub _make_xor_slices {
    return join(', ', @slices);
 }
 
-# Queries the replication table for chunks that differ from the master's data.
+# Queries the replication table for chunks that differ from the source's data.
 sub find_replication_differences {
    my ($self, %args) = @_;
-   my @required_args = qw(dbh repl_table);
+   my @required_args = qw(dbh repl_table source_crc_name source_cnt_name);
    foreach my $arg( @required_args ) {
       die "I need a $arg argument" unless $args{$arg};
    }
-   my ($dbh, $repl_table) = @args{@required_args};
+   my ($dbh, $repl_table, $source_crc_name, $source_cnt_name) = @args{@required_args};
 
 
    my $tries = $self->{'OptionParser'}->get('replicate-check-retries') || 1;
@@ -484,13 +484,13 @@ sub find_replication_differences {
       my $sql
          = "SELECT CONCAT(db, '.', tbl) AS `table`, "
          . "chunk, chunk_index, lower_boundary, upper_boundary, "
-         . "COALESCE(this_cnt-master_cnt, 0) AS cnt_diff, "
+         . "COALESCE(this_cnt-${source_cnt_name}, 0) AS cnt_diff, "
          . "COALESCE("
-         .   "this_crc <> master_crc OR ISNULL(master_crc) <> ISNULL(this_crc), 0"
-         . ") AS crc_diff, this_cnt, master_cnt, this_crc, master_crc "
+         .   "this_crc <> ${source_crc_name} OR ISNULL(${source_crc_name}) <> ISNULL(this_crc), 0"
+         . ") AS crc_diff, this_cnt, ${source_cnt_name}, this_crc, ${source_crc_name} "
          . "FROM $repl_table "
-         . "WHERE (master_cnt <> this_cnt OR master_crc <> this_crc "
-         .        "OR ISNULL(master_crc) <> ISNULL(this_crc)) "
+         . "WHERE (${source_cnt_name} <> this_cnt OR ${source_crc_name} <> this_crc "
+         .        "OR ISNULL(${source_crc_name}) <> ISNULL(this_crc)) "
          . ($args{where} ? " AND ($args{where})" : "");
       PTDEBUG && _d($sql);
       $diffs = $dbh->selectall_arrayref($sql, { Slice => {} });

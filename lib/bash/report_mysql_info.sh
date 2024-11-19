@@ -200,7 +200,7 @@ get_mysql_uptime () {
    echo "${restart} (up ${uptime})"
 }
 
-# Summarizes the output of SHOW MASTER LOGS.
+# Summarizes the output of SHOW BINARY LOGS.
 summarize_binlogs () {
    local file="$1"
 
@@ -924,6 +924,7 @@ format_overall_db_stats () {
 
 section_percona_server_features () {
    local file="$1"
+   replica_name="$2"
 
    [ -e "$file" ] || return
 
@@ -952,7 +953,7 @@ section_percona_server_features () {
    name_val "Enhanced Logging"      \
             "$(feat_on "$file" log_slow_verbosity ne microtime)"
    name_val "Replica Perf Logging"  \
-            "$(feat_on "$file" log_slow_slave_statements)"
+            "$(feat_on "$file" log_slow_${replica_name}_statements)"
 
    # Renamed to query_response_time_stats in 5.5
    name_val "Response Time Hist."   \
@@ -1108,7 +1109,7 @@ section_noteworthy_variables () {
       name_val "${v}" "$(shorten $(get_var ${v} "$file") 0)"
    done
    for v in log log_error log_warnings log_slow_queries \
-         log_queries_not_using_indexes log_slave_updates;
+         log_queries_not_using_indexes log_${replica_name}_updates;
    do
       name_val "${v}" "$(get_var ${v} "$file")"
    done
@@ -1120,6 +1121,7 @@ section_noteworthy_variables () {
 _semi_sync_stats_for () {
    local target="$1"
    local file="$2"
+   local replica_name="$3"
 
    [ -e "$file" ] || return
 
@@ -1144,13 +1146,13 @@ _semi_sync_stats_for () {
    name_val "${target} semisync status" "${semisync_status}"
    name_val "${target} trace level" "${semisync_trace}, ${trace_extra}"
 
-   if [ "${target}" = "master" ]; then
+   if [ "${target}" = "source" ] || [ "${target}" = "master" ]; then
       name_val "${target} timeout in milliseconds" \
                "$(get_var "rpl_semi_sync_${target}_timeout" "${file}")"
-      name_val "${target} waits for slaves"        \
-               "$(get_var "rpl_semi_sync_${target}_wait_no_slave" "${file}")"
+      name_val "${target} waits for ${replica_name}s"        \
+               "$(get_var "rpl_semi_sync_${target}_wait_no_${replica_name}" "${file}")"
 
-      _d "Prepend Rpl_semi_sync_master_ to the following"
+      _d "Prepend Rpl_semi_sync_${target}_ to the following"
       for v in                                              \
          clients net_avg_wait_time net_wait_time net_waits  \
          no_times no_tx timefunc_failures tx_avg_wait_time  \
@@ -1158,7 +1160,7 @@ _semi_sync_stats_for () {
          wait_sessions yes_tx;
       do
          name_val "${target} ${v}" \
-                  "$( get_var "Rpl_semi_sync_master_${v}" "${file}" )"
+                  "$( get_var "Rpl_semi_sync_${target}_${v}" "${file}" )"
       done
    fi
 }
@@ -1182,7 +1184,7 @@ noncounters_pattern () {
       Not_flushed_delayed_rows Open_files Open_streams Open_tables \
       Prepared_stmt_count Qcache_free_blocks Qcache_free_memory \
       Qcache_queries_in_cache Qcache_total_blocks Rpl_status \
-      Slave_open_temp_tables Slave_running Ssl_cipher Ssl_cipher_list \
+      Slave_open_temp_tables Slave_running Replica_open_temp_tables Ssl_cipher Ssl_cipher_list \
       Ssl_ctx_verify_depth Ssl_ctx_verify_mode Ssl_default_timeout \
       Ssl_session_cache_mode Ssl_session_cache_size Ssl_verify_depth \
       Ssl_verify_mode Ssl_version Tc_log_max_pages_used Tc_log_page_size \
@@ -1213,16 +1215,17 @@ section_mysqld () {
    done < "$executables_file"
 }
 
-section_slave_hosts () {
-   local slave_hosts_file="$1"
+section_replica_hosts () {
+   local replica_hosts_file="$1"
+   local replica_name=`echo "$2" | sed 's/[^ ]*/\u&/'`
 
-   [ -e "$slave_hosts_file" ] || return
+   [ -e "$replica_hosts_file" ] || return
 
-   section "Slave Hosts"
-   if [ -s "$slave_hosts_file" ]; then
-       cat "$slave_hosts_file"
+   section "${replica_name} Hosts"
+   if [ -s "$replica_hosts_file" ]; then
+       cat "$replica_hosts_file"
    else
-       echo "No slaves found"
+       echo "No ${replica_name} found"
    fi
 }
 
@@ -1312,6 +1315,27 @@ report_mysql_summary () {
    # Field width for name_val
    local NAME_VAL_LEN=25
 
+   # Local variables
+   local user="$(get_var "pt-summary-internal-user" "$dir/mysql-variables")"
+   local port="$(get_var port "$dir/mysql-variables")"
+   local now="$(get_var "pt-summary-internal-now" "$dir/mysql-variables")"
+   local mysql_version="$(get_var version "$dir/mysql-variables")"
+
+   local source_name='source'
+   local replica_name='replica'
+   local source_log='binary'
+   local source_status='binary log'
+   local source_logs_file="mysql-binary-logs"
+   local source_status_file="mysql-binary-log-status"
+   if [ "${mysql_version}" '<' "8.1" ]; then
+      source_name='master'
+      replica_name='slave'
+      source_log='master'
+      source_status='master'
+      source_logs_file='mysql-master-logs'
+      source_status_file='mysql-master-status'
+   fi
+
    # ########################################################################
    # Header for the whole thing, table of discovered instances
    # ########################################################################
@@ -1323,13 +1347,11 @@ report_mysql_summary () {
 
    section_mysqld "$dir/mysqld-executables" "$dir/mysql-variables"
 
-   section_slave_hosts "$dir/mysql-slave-hosts"
+   section_replica_hosts "$dir/mysql-${replica_name}-hosts" ${replica_name}
    # ########################################################################
    # General date, hostname, etc
    # ########################################################################
-   local user="$(get_var "pt-summary-internal-user" "$dir/mysql-variables")"
-   local port="$(get_var port "$dir/mysql-variables")"
-   local now="$(get_var "pt-summary-internal-now" "$dir/mysql-variables")"
+
    section "Report On Port ${port}"
    name_val User "${user}"
    name_val Time "${now} ($(get_mysql_timezone "$dir/mysql-variables"))"
@@ -1348,10 +1370,10 @@ report_mysql_summary () {
    local fuzz_procr=$(fuzz $(get_var Threads_running "$dir/mysql-status"))
    name_val Processes "${fuzz_procs} connected, ${fuzz_procr} running"
 
-   local slave=""
-   if [ -s "$dir/mysql-slave" ]; then slave=""; else slave="not "; fi
-   local slavecount=$(grep -c 'Binlog Dump' "$dir/mysql-processlist")
-   name_val Replication "Is ${slave}a slave, has ${slavecount} slaves connected"
+   local replica=""
+   if [ -s "$dir/mysql-${replica_name}" ]; then replica=""; else replica="not "; fi
+   local replicacount=$(grep -c 'Binlog Dump' "$dir/mysql-processlist")
+   name_val Replication "Is ${replica}a ${replica_name}, has ${replicacount} ${replica_name}s connected"
 
 
    # TODO move this into a section with other files: error log, slow log and
@@ -1394,7 +1416,7 @@ report_mysql_summary () {
    # Percona Server features
    # ########################################################################
    section "Key Percona Server features"
-   section_percona_server_features "$dir/mysql-variables"
+   section_percona_server_features "$dir/mysql-variables" "${replica_name}"
 
    # ########################################################################
    # Percona XtraDB Cluster data
@@ -1432,19 +1454,20 @@ report_mysql_summary () {
       name_val HitToInsertRatio "${hrat}"
    fi
 
-   local semisync_enabled_master="$(get_var "rpl_semi_sync_master_enabled" "$dir/mysql-variables")"
-   if [ -n "${semisync_enabled_master}" ]; then
+   local semisync_enabled_source="$(get_var "rpl_semi_sync_${source_name}_enabled" "$dir/mysql-variables")"
+   if [ -n "${semisync_enabled_source}" ]; then
       section "Semisynchronous Replication"
-      if [ "$semisync_enabled_master" = "OFF" -o "$semisync_enabled_master" = "0" -o -z "$semisync_enabled_master" ]; then
-         name_val "Master" "Disabled"
+      if [ "$semisync_enabled_source" = "OFF" -o "$semisync_enabled_source" = "0" -o -z "$semisync_enabled_source" ]; then
+         name_val "Source" "Disabled"
       else
-         _semi_sync_stats_for "master" "$dir/mysql-variables"
+         _semi_sync_stats_for "${source_name}" "$dir/mysql-variables" "${replica_name}"
       fi
-      local semisync_enabled_slave="$(get_var rpl_semi_sync_slave_enabled "$dir/mysql-variables")"
-      if    [ "$semisync_enabled_slave" = "OFF" -o "$semisync_enabled_slave" = "0" -o -z "$semisync_enabled_slave" ]; then
-         name_val "Slave" "Disabled"
+      local semisync_enabled_replica="$(get_var rpl_semi_sync_${replica_name}_enabled "$dir/mysql-variables")"
+      if    [ "$semisync_enabled_replica" = "OFF" -o "$semisync_enabled_replica" = "0" -o -z "$semisync_enabled_replica" ]; then
+         local replica_name_cap=`echo "$replica_name" | sed 's/[^ ]*/\u&/'`
+         name_val "${replica_name_cap}" "Disabled"
       else
-         _semi_sync_stats_for "slave" "$dir/mysql-variables"
+         _semi_sync_stats_for "${replica_name}" "$dir/mysql-variables" "${replica_name}"
       fi
    fi
 
@@ -1610,19 +1633,19 @@ report_mysql_summary () {
    # ########################################################################
    section "Binary Logging"
 
-   if    [ -s "$dir/mysql-master-logs" ] \
-      || [ -s "$dir/mysql-master-status" ]; then
-      summarize_binlogs "$dir/mysql-master-logs"
+   if    [ -s "$dir/$source_logs_file" ] \
+      || [ -s "$dir/$source_status_file" ]; then
+      summarize_binlogs "$dir/$source_logs_file"
       local format="$(get_var binlog_format "$dir/mysql-variables")"
       name_val binlog_format "${format:-STATEMENT}"
       name_val expire_logs_days "$(get_var expire_logs_days "$dir/mysql-variables")"
       name_val sync_binlog "$(get_var sync_binlog "$dir/mysql-variables")"
       name_val server_id "$(get_var server_id "$dir/mysql-variables")"
-      format_binlog_filters "$dir/mysql-master-status"
+      format_binlog_filters "$dir/$source_status_file"
    fi
 
-# Replication: seconds behind, running, filters, skip_slave_start, skip_errors,
-# read_only, temp tables open, slave_net_timeout, slave_exec_mode
+# Replication: seconds behind, running, filters, skip_replica_start, skip_errors,
+# read_only, temp tables open, replica_net_timeout, replica_exec_mode
 
    # ########################################################################
    # Interesting things that you just ought to know about.

@@ -27,8 +27,8 @@ plan tests => 3;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for("master");
-my $master_dsn = $sb->dsn_for("master");
+my $source_dbh = $sb->get_dbh_for("source");
+my $source_dsn = $sb->dsn_for("source");
 
 # The sandbox servers run with lock_wait_timeout=3 and it's not dynamic
 # so we need to specify --set-vars innodb_lock_wait_timeout=3 else the
@@ -37,10 +37,10 @@ my @args = (qw(--set-vars innodb_lock_wait_timeout=3));
 my $output;
 my $exit_status;
 
-$sb->load_file('master', "t/pt-online-schema-change/samples/pt-1853.sql");
+$sb->load_file('source', "t/pt-online-schema-change/samples/pt-1853.sql");
 
 ($output, $exit_status) = full_output(
-    sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=jointit",
+    sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=jointit",
             '--execute', 
             '--alter', "engine=innodb",
             '--alter-foreign-keys-method', 'rebuild_constraints'
@@ -56,7 +56,7 @@ isnt(
 );
 
 ($output, $exit_status) = full_output(
-    sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=jointit",
+    sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=jointit",
             '--execute', 
             '--alter', "engine=innodb",
             '--alter-foreign-keys-method', 'rebuild_constraints',
@@ -75,6 +75,6 @@ isnt(
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

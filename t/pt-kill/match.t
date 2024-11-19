@@ -14,9 +14,11 @@ use Test::More tests => 17;
 use PerconaTest;
 use Sandbox;
 require "$trunk/bin/pt-kill";
+require VersionParser;
+
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $slave_dbh = $sb->get_dbh_for('slave1');
+my $replica_dbh = $sb->get_dbh_for('replica1');
 
 my @args = qw(--test-matching);
 my $output;
@@ -161,11 +163,11 @@ like(
 # Live tests.
 # #############################################################################
 SKIP: {
-   skip "Cannot connect to sandbox slave", 1 unless $slave_dbh;
+   skip "Cannot connect to sandbox replica", 1 unless $replica_dbh;
    
-   my $pl        = $slave_dbh->selectall_arrayref('show processlist');
+   my $pl        = $replica_dbh->selectall_arrayref('show processlist');
    my @repl_thds = map { $_->[0] } grep { $_->[1] eq 'system user' } @$pl;
-   skip "Sandbox slave has no replication threads", unless scalar @repl_thds;
+   skip "Sandbox replica has no replication threads", unless scalar @repl_thds;
 
    my $repl_thd_ids = join("|", @repl_thds);
 
@@ -187,7 +189,7 @@ SKIP: {
       "--replication-threads allows matching replication thread"
    );
 
-   $slave_dbh->disconnect();
+   $replica_dbh->disconnect();
 };
 
 # #############################################################################

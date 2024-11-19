@@ -15,12 +15,13 @@ use TableChecksum;
 use TableParser;
 use Quoter;
 use DSNParser;
+use VersionParser;
 use Sandbox;
 use PerconaTest;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
    plan skip_all => "Cannot connect to sandbox master";
@@ -634,7 +635,7 @@ is_deeply(
 # #############################################################################
 # Issue 94: Enhance mk-table-checksum, add a --ignorecols option
 # #############################################################################
-$sb->load_file('master', 't/lib/samples/issue_94.sql');
+$sb->load_file('source', 't/lib/samples/issue_94.sql');
 $t= $tp->parse( $tp->get_create_table($dbh, 'test', 'issue_94') );
 my $query = $c->make_checksum_query(
    db         => 'test',

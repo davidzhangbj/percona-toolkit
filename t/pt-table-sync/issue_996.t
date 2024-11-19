@@ -17,14 +17,14 @@ require "$trunk/bin/pt-table-sync";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave_dbh  = $sb->get_dbh_for('slave1'); 
+my $source_dbh = $sb->get_dbh_for('source');
+my $replica_dbh  = $sb->get_dbh_for('replica1'); 
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
-elsif ( !$slave_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave';
+elsif ( !$replica_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica';
 }
 elsif ( $sandbox_version ge '8.0' ) {
    plan skip_all => 'Test fails due to https://bugs.mysql.com/bug.php?id=115017';
@@ -34,7 +34,7 @@ else {
 }
 
 my $output;
-my @args = ('--sync-to-master', 'h=127.1,P=12346,u=msandbox,p=msandbox',
+my @args = ('--sync-to-source', 'h=127.1,P=12346,u=msandbox,p=msandbox',
             qw(-d issue_375 --replicate issue_375.checksums --print));
 my $pt_table_checksum = "$trunk/bin/pt-table-checksum h=127.1,P=12345,u=msandbox,p=msandbox -d issue_375 --chunk-size 20 --chunk-size-limit 0 --set-vars innodb_lock_wait_timeout=3";
 
@@ -43,24 +43,24 @@ my $pt_table_checksum = "$trunk/bin/pt-table-checksum h=127.1,P=12345,u=msandbox
 # #############################################################################
 
 # Re-using this table for this issue.  It has 100 pk rows.
-$sb->load_file('master', 't/pt-table-sync/samples/issue_375.sql');
+$sb->load_file('source', 't/pt-table-sync/samples/issue_375.sql');
 wait_until(
    sub {
       my $row;
       eval {
-         $row = $slave_dbh->selectrow_hashref("select * from issue_375.t where id=35");
+         $row = $replica_dbh->selectrow_hashref("select * from issue_375.t where id=35");
       };
       return 1 if $row && $row->{foo} eq 'ai';
    },
 );
 
 # Make the tables differ.  These diff rows are all in chunk 1.
-$slave_dbh->do("update issue_375.t set foo='foo' where id in (21, 25, 35)");
+$replica_dbh->do("update issue_375.t set foo='foo' where id in (21, 25, 35)");
 wait_until(
    sub {
       my $row;
       eval {
-         $row = $slave_dbh->selectrow_hashref("select * from issue_375.t where id=35");
+         $row = $replica_dbh->selectrow_hashref("select * from issue_375.t where id=35");
       };
       return 1 if $row && $row->{foo} eq 'foo';
    },
@@ -107,6 +107,6 @@ diag(`rm -rf $file >/dev/null`);
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 exit;

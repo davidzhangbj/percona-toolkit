@@ -22,19 +22,19 @@ $Data::Dumper::Quotekeys = 0;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $c1_dbh = $sb->get_dbh_for('master');
+my $c1_dbh = $sb->get_dbh_for('source');
 
-diag(`$trunk/sandbox/start-sandbox master 2900 >/dev/null`);
-my $r1_dbh = $sb->get_dbh_for('master3');
+diag(`$trunk/sandbox/start-sandbox source 2900 >/dev/null`);
+my $r1_dbh = $sb->get_dbh_for('source3');
 
-diag(`$trunk/sandbox/start-sandbox master 2901 >/dev/null`);
-my $r2_dbh = $sb->get_dbh_for('master4');
+diag(`$trunk/sandbox/start-sandbox source 2901 >/dev/null`);
+my $r2_dbh = $sb->get_dbh_for('source4');
 
 if ( !$c1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 elsif ( !$r1_dbh ) {
-   plan skip_all => 'Cannot connect to second sandbox master';
+   plan skip_all => 'Cannot connect to second sandbox source';
 
 }
 else {
@@ -49,10 +49,10 @@ $sb->wipe_clean($c1_dbh);
 $sb->wipe_clean($r1_dbh);
 
 sub load_bidi_data {
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master3', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/master-data.sql');
-   $sb->load_file('master3', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source3', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/master-data.sql');
+   $sb->load_file('source3', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
 }
 
 my $r1_data_synced =  [
@@ -323,14 +323,14 @@ is_deeply(
 # Test bidirectional sync with 3 servers.
 # #############################################################################
 
-# It's confusing but master4 = 2901, aka our 3rd master server.
+# It's confusing but source4 = 2901, aka our 3rd source server.
 
 SKIP: {
-   skip 'Cannot connect to third sandbox master', 9 unless $r2_dbh;
+   skip 'Cannot connect to third sandbox source', 9 unless $r2_dbh;
 
    load_bidi_data();
-   $sb->load_file('master4', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master4', 't/pt-table-sync/samples/bidirectional/remote-2.sql');
+   $sb->load_file('source4', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source4', 't/pt-table-sync/samples/bidirectional/remote-2.sql');
 
    $res = $r2_dbh->selectall_arrayref('select * from bidi.t order by id');
    is_deeply(

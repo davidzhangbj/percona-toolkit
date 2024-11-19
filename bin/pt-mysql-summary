@@ -686,7 +686,7 @@ section () {
 }
 
 NAME_VAL_LEN=12
-name_val () {
+name_val() {
    printf "%+*s | %s\n" "${NAME_VAL_LEN}" "$1" "$2"
 }
 
@@ -712,7 +712,7 @@ shorten() {
    '
 }
 
-group_concat () {
+group_concat() {
    sed -e '{H; $!d;}' -e 'x' -e 's/\n[[:space:]]*\([[:digit:]]*\)[[:space:]]*/, \1x/g' -e 's/[[:space:]][[:space:]]*/ /g' -e 's/, //' "${1}"
 }
 
@@ -946,8 +946,10 @@ collect_mysql_plugins () {
    $CMD_MYSQL $EXT_ARGV -ss -e 'SHOW PLUGINS' 2>/dev/null
 }
 
-collect_mysql_slave_status () {
-   $CMD_MYSQL $EXT_ARGV -ssE -e 'SHOW SLAVE STATUS' 2>/dev/null
+collect_mysql_replica_status () {
+   local replica_name="$1"
+
+   $CMD_MYSQL $EXT_ARGV -ssE -e "SHOW ${replica_name} STATUS" 2>/dev/null
 }
 
 collect_mysql_innodb_status () {
@@ -974,15 +976,30 @@ collect_mysql_roles () {
    $CMD_MYSQL $EXT_ARGV -ss -e "$QUERY" 2>/dev/null
 }
 
-collect_mysql_show_slave_hosts () {
-   $CMD_MYSQL $EXT_ARGV -ssE -e 'SHOW SLAVE HOSTS' 2>/dev/null
+collect_mysql_show_replica_hosts () {
+   local version="$1"
+
+   local replicas='replicas'
+   if [ "$version" '<' "8.1" ]; then
+      replicas='slave hosts';
+   fi
+
+   $CMD_MYSQL $EXT_ARGV -ssE -e "SHOW ${replicas}" 2>/dev/null
 }
 
-collect_master_logs_status () {
-   local master_logs_file="$1"
-   local master_status_file="$2"
-   $CMD_MYSQL $EXT_ARGV -ss -e 'SHOW MASTER LOGS' > "$master_logs_file" 2>/dev/null
-   $CMD_MYSQL $EXT_ARGV -ss -e 'SHOW MASTER STATUS' > "$master_status_file" 2>/dev/null
+collect_source_logs_status () {
+   local source_logs_file="$1"
+   local source_status_file="$2"
+   local version="$3"
+
+   local source_log='binary'
+   local source_status='binary log'
+   if [ "$version" '<' "8.1" ]; then
+      source_log='master';
+      source_status='master';
+   fi
+   $CMD_MYSQL $EXT_ARGV -ss -e "SHOW ${source_log} LOGS" > "$source_logs_file" 2>/dev/null
+   $CMD_MYSQL $EXT_ARGV -ss -e "SHOW ${source_status} STATUS" > "$source_status_file" 2>/dev/null
 }
 
 collect_mysql_deferred_status () {
@@ -1106,7 +1123,6 @@ collect_mysql_info () {
    collect_mysql_status        > "$dir/mysql-status"
    collect_mysql_databases     > "$dir/mysql-databases"
    collect_mysql_plugins       > "$dir/mysql-plugins"
-   collect_mysql_slave_status  > "$dir/mysql-slave"
    collect_mysql_innodb_status > "$dir/innodb-status"
    collect_mysql_ndb_status    > "$dir/ndb-status"
    collect_mysql_processlist   > "$dir/mysql-processlist"
@@ -1114,13 +1130,30 @@ collect_mysql_info () {
    collect_mysql_roles         > "$dir/mysql-roles"
    collect_keyring_plugins     > "$dir/keyring-plugins"
 
+   local mysql_version="$(get_var version "$dir/mysql-variables")"
+
+   local replicas='replicas'
+   local replica_name='replica'
+   if [ "$mysql_version" '<' "8.1" ]; then
+      replicas='slave-hosts'
+      replica_name='slave'
+   fi
+
+   collect_mysql_replica_status $replica_name > "$dir/mysql-${replica_name}"
    collect_mysqld_instances   "$dir/mysql-variables"  > "$dir/mysqld-instances"
    collect_mysqld_executables "$dir/mysqld-instances" > "$dir/mysqld-executables"
-   collect_mysql_show_slave_hosts  "$dir/mysql-slave-hosts" > "$dir/mysql-slave-hosts"
+   collect_mysql_show_replica_hosts "$mysql_version" > "$dir/mysql-${replicas}"
 
    local binlog="$(get_var log_bin "$dir/mysql-variables")"
    if [ "${binlog}" ]; then
-      collect_master_logs_status "$dir/mysql-master-logs" "$dir/mysql-master-status"
+      local source_logs_file="mysql-binary-logs"
+      local source_status_file="mysql-binary-log-status"
+
+      if [ "$mysql_version" '<' "8.1" ]; then
+         source_logs_file='mysql-master-logs'
+         source_status_file='mysql-master-status'
+      fi
+      collect_source_logs_status "$dir/$source_logs_file" "$dir/$source_status_file" ${mysql_version}
    fi
 
    local uptime="$(get_var Uptime "$dir/mysql-status")"
@@ -1148,7 +1181,6 @@ collect_mysql_info () {
    fi
 
    if [ "${OPT_LIST_ENCRYPTED_TABLES}" = 'yes' ]; then
-      local mysql_version="$(get_var version "$dir/mysql-variables")"
       collect_encrypted_tables                       > "$dir/encrypted-tables"
       collect_encrypted_tablespaces ${mysql_version} > "$dir/encrypted-tablespaces"
    fi
@@ -2016,6 +2048,7 @@ format_overall_db_stats () {
 
 section_percona_server_features () {
    local file="$1"
+   replica_name="$2"
 
    [ -e "$file" ] || return
 
@@ -2039,7 +2072,7 @@ section_percona_server_features () {
    name_val "Enhanced Logging"      \
             "$(feat_on "$file" log_slow_verbosity ne microtime)"
    name_val "Replica Perf Logging"  \
-            "$(feat_on "$file" log_slow_slave_statements)"
+            "$(feat_on "$file" log_slow_${replica_name}_statements)"
 
    name_val "Response Time Hist."   \
             "$(feat_on_renamed "$file" enable_query_response_time_stats query_response_time_stats)"
@@ -2188,7 +2221,7 @@ section_noteworthy_variables () {
       name_val "${v}" "$(shorten $(get_var ${v} "$file") 0)"
    done
    for v in log log_error log_warnings log_slow_queries \
-         log_queries_not_using_indexes log_slave_updates;
+         log_queries_not_using_indexes log_${replica_name}_updates;
    do
       name_val "${v}" "$(get_var ${v} "$file")"
    done
@@ -2197,6 +2230,7 @@ section_noteworthy_variables () {
 _semi_sync_stats_for () {
    local target="$1"
    local file="$2"
+   local replica_name="$3"
 
    [ -e "$file" ] || return
 
@@ -2221,13 +2255,13 @@ _semi_sync_stats_for () {
    name_val "${target} semisync status" "${semisync_status}"
    name_val "${target} trace level" "${semisync_trace}, ${trace_extra}"
 
-   if [ "${target}" = "master" ]; then
+   if [ "${target}" = "source" ] || [ "${target}" = "master" ]; then
       name_val "${target} timeout in milliseconds" \
                "$(get_var "rpl_semi_sync_${target}_timeout" "${file}")"
-      name_val "${target} waits for slaves"        \
-               "$(get_var "rpl_semi_sync_${target}_wait_no_slave" "${file}")"
+      name_val "${target} waits for ${replica_name}s"        \
+               "$(get_var "rpl_semi_sync_${target}_wait_no_${replica_name}" "${file}")"
 
-      _d "Prepend Rpl_semi_sync_master_ to the following"
+      _d "Prepend Rpl_semi_sync_${target}_ to the following"
       for v in                                              \
          clients net_avg_wait_time net_wait_time net_waits  \
          no_times no_tx timefunc_failures tx_avg_wait_time  \
@@ -2235,7 +2269,7 @@ _semi_sync_stats_for () {
          wait_sessions yes_tx;
       do
          name_val "${target} ${v}" \
-                  "$( get_var "Rpl_semi_sync_master_${v}" "${file}" )"
+                  "$( get_var "Rpl_semi_sync_${target}_${v}" "${file}" )"
       done
    fi
 }
@@ -2256,7 +2290,7 @@ noncounters_pattern () {
       Not_flushed_delayed_rows Open_files Open_streams Open_tables \
       Prepared_stmt_count Qcache_free_blocks Qcache_free_memory \
       Qcache_queries_in_cache Qcache_total_blocks Rpl_status \
-      Slave_open_temp_tables Slave_running Ssl_cipher Ssl_cipher_list \
+      Slave_open_temp_tables Slave_running Replica_open_temp_tables Ssl_cipher Ssl_cipher_list \
       Ssl_ctx_verify_depth Ssl_ctx_verify_mode Ssl_default_timeout \
       Ssl_session_cache_mode Ssl_session_cache_size Ssl_verify_depth \
       Ssl_verify_mode Ssl_version Tc_log_max_pages_used Tc_log_page_size \
@@ -2287,16 +2321,17 @@ section_mysqld () {
    done < "$executables_file"
 }
 
-section_slave_hosts () {
-   local slave_hosts_file="$1"
+section_replica_hosts () {
+   local replica_hosts_file="$1"
+   local replica_name=`echo "$2" | sed 's/[^ ]*/\u&/'`
 
-   [ -e "$slave_hosts_file" ] || return
+   [ -e "$replica_hosts_file" ] || return
 
-   section "Slave Hosts"
-   if [ -s "$slave_hosts_file" ]; then
-       cat "$slave_hosts_file"
+   section "${replica_name} Hosts"
+   if [ -s "$replica_hosts_file" ]; then
+       cat "$replica_hosts_file"
    else
-       echo "No slaves found"
+       echo "No ${replica_name} found"
    fi
 }
 
@@ -2385,6 +2420,26 @@ report_mysql_summary () {
 
    local NAME_VAL_LEN=25
 
+   local user="$(get_var "pt-summary-internal-user" "$dir/mysql-variables")"
+   local port="$(get_var port "$dir/mysql-variables")"
+   local now="$(get_var "pt-summary-internal-now" "$dir/mysql-variables")"
+   local mysql_version="$(get_var version "$dir/mysql-variables")"
+
+   local source_name='source'
+   local replica_name='replica'
+   local source_log='binary'
+   local source_status='binary log'
+   local source_logs_file="mysql-binary-logs"
+   local source_status_file="mysql-binary-log-status"
+   if [ "${mysql_version}" '<' "8.1" ]; then
+      source_name='master'
+      replica_name='slave'
+      source_log='master'
+      source_status='master'
+      source_logs_file='mysql-master-logs'
+      source_status_file='mysql-master-status'
+   fi
+
 
    section "Percona Toolkit MySQL Summary Report"
    name_val "System time" "`date -u +'%F %T UTC'` (local TZ: `date +'%Z %z'`)"
@@ -2393,10 +2448,8 @@ report_mysql_summary () {
 
    section_mysqld "$dir/mysqld-executables" "$dir/mysql-variables"
 
-   section_slave_hosts "$dir/mysql-slave-hosts"
-   local user="$(get_var "pt-summary-internal-user" "$dir/mysql-variables")"
-   local port="$(get_var port "$dir/mysql-variables")"
-   local now="$(get_var "pt-summary-internal-now" "$dir/mysql-variables")"
+   section_replica_hosts "$dir/mysql-${replica_name}-hosts" ${replica_name}
+
    section "Report On Port ${port}"
    name_val User "${user}"
    name_val Time "${now} ($(get_mysql_timezone "$dir/mysql-variables"))"
@@ -2415,10 +2468,10 @@ report_mysql_summary () {
    local fuzz_procr=$(fuzz $(get_var Threads_running "$dir/mysql-status"))
    name_val Processes "${fuzz_procs} connected, ${fuzz_procr} running"
 
-   local slave=""
-   if [ -s "$dir/mysql-slave" ]; then slave=""; else slave="not "; fi
-   local slavecount=$(grep -c 'Binlog Dump' "$dir/mysql-processlist")
-   name_val Replication "Is ${slave}a slave, has ${slavecount} slaves connected"
+   local replica=""
+   if [ -s "$dir/mysql-${replica_name}" ]; then replica=""; else replica="not "; fi
+   local replicacount=$(grep -c 'Binlog Dump' "$dir/mysql-processlist")
+   name_val Replication "Is ${replica}a ${replica_name}, has ${replicacount} ${replica_name}s connected"
 
 
    local pid_file="$(get_var "pid_file" "$dir/mysql-variables")"
@@ -2445,7 +2498,7 @@ report_mysql_summary () {
    name_val Usage "$(fuzzy_pct ${open_tables} ${table_cache})"
 
    section "Key Percona Server features"
-   section_percona_server_features "$dir/mysql-variables"
+   section_percona_server_features "$dir/mysql-variables" "${replica_name}"
 
    section "Percona XtraDB Cluster"
    local has_wsrep="$(get_var "wsrep_on" "$dir/mysql-variables")"
@@ -2473,19 +2526,20 @@ report_mysql_summary () {
       name_val HitToInsertRatio "${hrat}"
    fi
 
-   local semisync_enabled_master="$(get_var "rpl_semi_sync_master_enabled" "$dir/mysql-variables")"
-   if [ -n "${semisync_enabled_master}" ]; then
+   local semisync_enabled_source="$(get_var "rpl_semi_sync_${source_name}_enabled" "$dir/mysql-variables")"
+   if [ -n "${semisync_enabled_source}" ]; then
       section "Semisynchronous Replication"
-      if [ "$semisync_enabled_master" = "OFF" -o "$semisync_enabled_master" = "0" -o -z "$semisync_enabled_master" ]; then
-         name_val "Master" "Disabled"
+      if [ "$semisync_enabled_source" = "OFF" -o "$semisync_enabled_source" = "0" -o -z "$semisync_enabled_source" ]; then
+         name_val "Source" "Disabled"
       else
-         _semi_sync_stats_for "master" "$dir/mysql-variables"
+         _semi_sync_stats_for "${source_name}" "$dir/mysql-variables" "${replica_name}"
       fi
-      local semisync_enabled_slave="$(get_var rpl_semi_sync_slave_enabled "$dir/mysql-variables")"
-      if    [ "$semisync_enabled_slave" = "OFF" -o "$semisync_enabled_slave" = "0" -o -z "$semisync_enabled_slave" ]; then
-         name_val "Slave" "Disabled"
+      local semisync_enabled_replica="$(get_var rpl_semi_sync_${replica_name}_enabled "$dir/mysql-variables")"
+      if    [ "$semisync_enabled_replica" = "OFF" -o "$semisync_enabled_replica" = "0" -o -z "$semisync_enabled_replica" ]; then
+         local replica_name_cap=`echo "$replica_name" | sed 's/[^ ]*/\u&/'`
+         name_val "${replica_name_cap}" "Disabled"
       else
-         _semi_sync_stats_for "slave" "$dir/mysql-variables"
+         _semi_sync_stats_for "${replica_name}" "$dir/mysql-variables" "${replica_name}"
       fi
    fi
 
@@ -2627,15 +2681,15 @@ report_mysql_summary () {
 
    section "Binary Logging"
 
-   if    [ -s "$dir/mysql-master-logs" ] \
-      || [ -s "$dir/mysql-master-status" ]; then
-      summarize_binlogs "$dir/mysql-master-logs"
+   if    [ -s "$dir/$source_logs_file" ] \
+      || [ -s "$dir/$source_status_file" ]; then
+      summarize_binlogs "$dir/$source_logs_file"
       local format="$(get_var binlog_format "$dir/mysql-variables")"
       name_val binlog_format "${format:-STATEMENT}"
       name_val expire_logs_days "$(get_var expire_logs_days "$dir/mysql-variables")"
       name_val sync_binlog "$(get_var sync_binlog "$dir/mysql-variables")"
       name_val server_id "$(get_var server_id "$dir/mysql-variables")"
-      format_binlog_filters "$dir/mysql-master-status"
+      format_binlog_filters "$dir/$source_status_file"
    fi
 
 

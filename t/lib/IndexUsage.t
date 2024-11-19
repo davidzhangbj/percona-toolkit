@@ -16,6 +16,7 @@ use constant PTDEBUG => $ENV{PTDEBUG} || 0;
 use IndexUsage;
 use OptionParser;
 use DSNParser;
+use VersionParser;
 use Transformers;
 use QueryRewriter;
 use Sandbox;
@@ -31,7 +32,7 @@ Transformers->import(qw(make_checksum));
 my $qr  = new QueryRewriter();
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 my $iu = new IndexUsage();
 

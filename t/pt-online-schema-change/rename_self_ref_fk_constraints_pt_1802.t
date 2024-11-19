@@ -19,16 +19,16 @@ require "$trunk/bin/pt-online-schema-change";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
+my $source_dbh = $sb->get_dbh_for('source');
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 # The sandbox servers run with lock_wait_timeout=3 and it's not dynamic
 # so we need to specify --set-vars innodb_lock_wait_timeout-3 else the
 # tool will die.
-my $master_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
+my $source_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
 my @args       = (qw(--set-vars innodb_lock_wait_timeout=3 --alter-foreign-keys-method rebuild_constraints));
 my $output;
 my $exit_status;
@@ -39,14 +39,14 @@ my $exit_status;
 # ############################################################################
 
 diag("Before loading sql");
-$sb->load_file('master', "t/pt-online-schema-change/samples/bug-1632522.sql");
+$sb->load_file('source', "t/pt-online-schema-change/samples/bug-1632522.sql");
 diag("after loading sql");
 
 # run once: we expect the constraint name to be appended with one underscore
 # but the self-referencing constraint will have 2 underscore
 ($output, $exit_status) = full_output(
    sub { pt_online_schema_change::main(@args,
-      "$master_dsn,D=bug1632522,t=test_table",
+      "$source_dsn,D=bug1632522,t=test_table",
       "--alter", "ENGINE=InnoDB",
       qw(--execute)) },
 );
@@ -59,7 +59,7 @@ my $query = <<"END";
      AND CONSTRAINT_NAME LIKE '%fk_%' 
 ORDER BY TABLE_NAME, CONSTRAINT_NAME
 END
-my $constraints = $master_dbh->selectall_arrayref($query);
+my $constraints = $source_dbh->selectall_arrayref($query);
 my @constraints = sort { @$a[0].@$a[1] cmp @$b[0].@$b[1] } @$constraints;
 
 is_deeply(
@@ -76,7 +76,7 @@ is_deeply(
 # if they havre't one, and to remove 2 if they have 2
 ($output, $exit_status) = full_output(
    sub { pt_online_schema_change::main(@args,
-      "$master_dsn,D=bug1632522,t=test_table",
+      "$source_dsn,D=bug1632522,t=test_table",
       "--alter", "ENGINE=InnoDB",
       qw(--execute)) },
 );
@@ -89,7 +89,7 @@ $query = <<"END";
      AND CONSTRAINT_NAME LIKE '%fk_%' 
 ORDER BY TABLE_NAME, CONSTRAINT_NAME
 END
-$constraints = $master_dbh->selectall_arrayref($query);
+$constraints = $source_dbh->selectall_arrayref($query);
 
 @constraints = sort { @$a[0].@$a[1] cmp @$b[0].@$b[1] } @$constraints;
 
@@ -106,7 +106,7 @@ is_deeply(
 # run third time: we expect constraints to be the same as we started (toggled back)
 ($output, $exit_status) = full_output(
    sub { pt_online_schema_change::main(@args,
-      "$master_dsn,D=bug1632522,t=test_table",
+      "$source_dsn,D=bug1632522,t=test_table",
       "--alter", "ENGINE=InnoDB",
       qw(--execute)) },
 );
@@ -119,7 +119,7 @@ $query = <<"END";
      and CONSTRAINT_NAME LIKE '%fk_%' 
 ORDER BY TABLE_NAME, CONSTRAINT_NAME
 END
-$constraints = $master_dbh->selectall_arrayref($query);
+$constraints = $source_dbh->selectall_arrayref($query);
 
 
 is_deeply(
@@ -135,6 +135,6 @@ is_deeply(
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

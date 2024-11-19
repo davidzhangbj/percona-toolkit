@@ -1137,7 +1137,7 @@ report_system_summary () { local PTFUNCNAME=report_system_summary;
                                        "$platform"
 
    section "Memory management"
-   report_transparent_huge_pages
+   report_transparent_huge_pages "$data_dir/transparent_hugepage"
 
    # ########################################################################
    # All done.  Signal the end so it's explicit.
@@ -1146,17 +1146,15 @@ report_system_summary () { local PTFUNCNAME=report_system_summary;
 }
 
 report_transparent_huge_pages () {
+   local file="$1"
 
-  if [ -f /sys/kernel/mm/transparent_hugepage/enabled ]; then
-    CONTENT_TRANSHP=$(</sys/kernel/mm/transparent_hugepage/enabled)
-    STATUS_THP_SYSTEM=$(echo $CONTENT_TRANSHP | grep -cv '\[never\]')
-  fi
-  if [ $STATUS_THP_SYSTEM = 0 ]; then
-    echo "Transparent huge pages are currently disabled on the system."
-  else
-    echo "Transparent huge pages are enabled."
-  fi
+   [ -e "$file" ] || return
 
+   if [ $(grep -cv '\[never\]' $file) = 0 ]; then
+      echo "Transparent huge pages are currently disabled on the system."
+   else
+      echo "Transparent huge pages are enabled."
+   fi
 }
 
 # ###########################################################################

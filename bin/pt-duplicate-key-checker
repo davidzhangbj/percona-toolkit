@@ -584,7 +584,7 @@ sub get_keys {
          ddl          => $key_ddl,
       };
 
-      if ( ($engine || '') =~ m/InnoDB/i && !$clustered_key ) {
+      if ( ($engine || '') =~ m/(InnoDB)|(TokuDB)|(RocksDB)/i && !$clustered_key ) {
          my $this_key = $keys->{$name};
          if ( $this_key->{name} eq 'PRIMARY' ) {
             $clustered_key = 'PRIMARY';
@@ -874,7 +874,7 @@ sub get_cxn_params {
       $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
          . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
                      grep { defined $info->{$_} }
-                     qw(F h P S A))
+                     qw(F h P S A s))
          . ';mysql_read_default_group=client'
          . ($info->{L} ? ';mysql_local_infile=1' : '');
    }
@@ -2501,7 +2501,10 @@ sub get_duplicate_keys {
    if ( $clustered_key
         && $args{clustered}
         && $args{tbl_info}->{engine}
-        && $args{tbl_info}->{engine} =~ m/InnoDB/i )
+        && ( $args{tbl_info}->{engine} =~ m/InnoDB/i
+           || $args{tbl_info}->{engine} =~ m/TokuDB/i
+           || $args{tbl_info}->{engine} =~ m/RocksDB/i )
+        )
    {
       PTDEBUG && _d('Removing UNIQUE dupes of clustered key');
       push @dupes,
@@ -5460,7 +5463,7 @@ PK columns appended to secondary key is duplicate.
 
 Detects when a suffix of a secondary key is a leftmost prefix of the primary
 key, and treats it as a duplicate key.  Only detects this condition on storage
-engines whose primary keys are clustered (currently InnoDB and solidDB).
+engines whose primary keys are clustered (currently InnoDB, TokuDB and MyRocks).
 
 Clustered storage engines append the primary key columns to the leaf nodes of
 all secondary keys anyway, so you might consider it redundant to have them
@@ -5726,6 +5729,12 @@ Socket file to use for connection.
 dsn: user; copy: yes
 
 User for login if not current user.
+
+=item * s
+
+dsn: mysql_ssl; copy: yes
+
+Create SSL connection
 
 =back
 

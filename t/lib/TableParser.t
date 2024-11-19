@@ -15,12 +15,13 @@ use Text::Diff;
 use TableParser;
 use Quoter;
 use DSNParser;
+use VersionParser;
 use Sandbox;
 use PerconaTest;
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 my $q   = new Quoter();
 my $tp  = new TableParser(Quoter=>$q);
@@ -69,7 +70,7 @@ SKIP: {
    );
 
    # Bug 932442: column with 2 spaces
-   $sb->load_file('master', "t/pt-table-checksum/samples/2-space-col.sql");
+   $sb->load_file('source', "t/pt-table-checksum/samples/2-space-col.sql");
    $ddl = $tp->get_create_table($dbh, qw(test t));
    like(
       $ddl,
@@ -749,11 +750,11 @@ is_deeply(
 SKIP: {
    skip 'Cannot connect to sandbox master', 8 unless $dbh;
 
-   $sb->load_file('master', 't/lib/samples/check_table.sql');
+   $sb->load_file('source', 't/lib/samples/check_table.sql');
 
    # msandbox user does not have GRANT privs.
    my $root_dbh = DBI->connect(
-      "DBI:mysql:host=127.0.0.1;port=12345", 'root', 'msandbox',
+      "DBI:mysql:host=127.0.0.1;port=12345;mysql_ssl=1", 'root', 'msandbox',
       { PrintError => 0, RaiseError => 1 });
 
    $root_dbh->do(q[CREATE USER 'user'@'%' IDENTIFIED BY '';] ) || die($root_dbh->errstr);
@@ -1061,15 +1062,15 @@ SKIP: {
    # We need to create a new server here, otherwise the whole test suite might die
    # if the crashed table can't be dropped.
    
-   my $master3_port = 2900;
-   my $master_basedir = "/tmp/$master3_port";
-   diag(`$trunk/sandbox/stop-sandbox $master3_port >/dev/null`);
-   diag(`$trunk/sandbox/start-sandbox master $master3_port >/dev/null`);
-   my $dbh3 = $sb->get_dbh_for("master3");
+   my $source3_port = 2900;
+   my $source_basedir = "/tmp/$source3_port";
+   diag(`$trunk/sandbox/stop-sandbox $source3_port >/dev/null`);
+   diag(`$trunk/sandbox/start-sandbox source $source3_port >/dev/null`);
+   my $dbh3 = $sb->get_dbh_for("source3");
    
-   $sb->load_file('master3', "t/lib/samples/bug_1047335_crashed_table.sql");
+   $sb->load_file('source3', "t/lib/samples/bug_1047335_crashed_table.sql");
 
-   my $db_dir         = "$master_basedir/data/bug_1047335";
+   my $db_dir         = "$source_basedir/data/bug_1047335";
    my $myi            = glob("$db_dir/crashed_table.[Mm][Yy][Iy]");
    my $frm            = glob("$db_dir/crashed_table.[Ff][Rr][Mm]");
 
@@ -1106,7 +1107,7 @@ SKIP: {
    $dbh3->do(q{CREATE DATABASE bug_1047335_2});
    
    my $broken_frm = "$trunk/t/lib/samples/broken_tbl.frm";
-   my $db_dir_2   = "$master_basedir/data/bug_1047335_2";
+   my $db_dir_2   = "$source_basedir/data/bug_1047335_2";
    
    diag(`cp $broken_frm $db_dir_2 2>&1`);
    
@@ -1118,7 +1119,7 @@ SKIP: {
       "get_create_table dies if SHOW CREATE TABLE failed (using broken_tbl.frm)",
    );
    
-   diag(`$trunk/sandbox/stop-sandbox $master3_port >/dev/null`);
+   diag(`$trunk/sandbox/stop-sandbox $source3_port >/dev/null`);
 }
 
 # #############################################################################

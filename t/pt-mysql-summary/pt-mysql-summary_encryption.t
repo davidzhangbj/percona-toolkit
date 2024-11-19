@@ -20,12 +20,12 @@ local $ENV{PTDEBUG} = "";
 
 my $dp         = new DSNParser(opts=>$dsn_opts);
 my $sb         = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
+my $source_dbh = $sb->get_dbh_for('source');
 my $has_keyring_plugin;
 
-my $db_flavor = VersionParser->new($master_dbh)->flavor();
+my $db_flavor = VersionParser->new($source_dbh)->flavor();
 if ( $db_flavor =~ m/Percona Server/ ) {
-    my $rows = $master_dbh->selectall_hashref("SHOW PLUGINS", "name");
+    my $rows = $source_dbh->selectall_hashref("SHOW PLUGINS", "name");
     while (my ($key, $values) = each %$rows) {
         if ($key =~ m/^keyring_/) {
             $has_keyring_plugin=1;
@@ -101,8 +101,8 @@ like(
 # SQL Mode ANSI_QUOTES
 #
 
-my ($orig_sql_mode) = $master_dbh->selectrow_array(q{SELECT @@SQL_MODE});
-$master_dbh->do("SET GLOBAL SQL_MODE='ANSI_QUOTES'");
+my ($orig_sql_mode) = $source_dbh->selectrow_array(q{SELECT @@SQL_MODE});
+$source_dbh->do("SET GLOBAL SQL_MODE='ANSI_QUOTES'");
 
 $out = `$env $trunk/bin/$tool --sleep 1 --databases mysql 2>/dev/null -- --defaults-file=/tmp/12345/my.sandbox.cnf`;
 
@@ -124,7 +124,7 @@ like(
    "Security works with SQL Mode ANSI_QUOTES"
 );
 
-$master_dbh->do("SET GLOBAL SQL_MODE='${orig_sql_mode}'");
+$source_dbh->do("SET GLOBAL SQL_MODE='${orig_sql_mode}'");
 
 # --read-samples
 for my $i (2..9) {
@@ -151,12 +151,12 @@ is(
    "--help works under sh and bash"
 );
 
-$master_dbh->do("DROP DATABASE IF EXISTS test");
-$master_dbh->do("CREATE DATABASE test");
-$master_dbh->do("CREATE TABLE test.t1(a INT PRIMARY KEY) ENCRYPTION='Y'");
-$master_dbh->do("CREATE TABLESPACE foo ADD DATAFILE 'foo.ibd' ENCRYPTION='Y'");
-$master_dbh->do("ALTER TABLE test.t1 TABLESPACE=foo");
-$master_dbh->do("CREATE TABLE test.t2(a INT PRIMARY KEY) ENCRYPTION='Y'");
+$source_dbh->do("DROP DATABASE IF EXISTS test");
+$source_dbh->do("CREATE DATABASE test");
+$source_dbh->do("CREATE TABLE test.t1(a INT PRIMARY KEY) ENCRYPTION='Y'");
+$source_dbh->do("CREATE TABLESPACE foo ADD DATAFILE 'foo.ibd' ENCRYPTION='Y'");
+$source_dbh->do("ALTER TABLE test.t1 TABLESPACE=foo");
+$source_dbh->do("CREATE TABLE test.t2(a INT PRIMARY KEY) ENCRYPTION='Y'");
 
 $out = `bash $trunk/bin/$tool --list-encrypted-tables -- --defaults-file=/tmp/12345/my.sandbox.cnf`;
 
@@ -184,9 +184,9 @@ like(
    "Encrypted tablespaces included in report"
 ) or diag $out;
 
-$master_dbh->do("DROP TABLE IF EXISTS test.t1");
-$master_dbh->do("DROP TABLE IF EXISTS test.t2");
-$master_dbh->do("DROP DATABASE IF EXISTS test");
-$master_dbh->do("DROP TABLESPACE foo");
+$source_dbh->do("DROP TABLE IF EXISTS test.t1");
+$source_dbh->do("DROP TABLE IF EXISTS test.t2");
+$source_dbh->do("DROP DATABASE IF EXISTS test");
+$source_dbh->do("DROP TABLESPACE foo");
 
 done_testing;

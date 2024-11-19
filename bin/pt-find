@@ -265,7 +265,7 @@ sub get_cxn_params {
       $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
          . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
                      grep { defined $info->{$_} }
-                     qw(F h P S A))
+                     qw(F h P S A s))
          . ';mysql_read_default_group=client'
          . ($info->{L} ? ';mysql_local_infile=1' : '');
    }
@@ -2141,7 +2141,7 @@ sub get_keys {
          ddl          => $key_ddl,
       };
 
-      if ( ($engine || '') =~ m/InnoDB/i && !$clustered_key ) {
+      if ( ($engine || '') =~ m/(InnoDB)|(TokuDB)|(RocksDB)/i && !$clustered_key ) {
          my $this_key = $keys->{$name};
          if ( $this_key->{name} eq 'PRIMARY' ) {
             $clustered_key = 'PRIMARY';
@@ -4481,9 +4481,9 @@ print their names:
 
   pt-find --ctime +1 --engine MyISAM
 
-Find InnoDB tables and convert them to MyISAM:
+Find MyISAM tables and convert them to InnoDB:
 
-  pt-find --engine InnoDB --exec "ALTER TABLE %D.%N ENGINE=MyISAM"
+  pt-find --engine MyISAM --exec "ALTER TABLE %D.%N ENGINE=InnoDB"
 
 Find tables created by a process that no longer exists, following the
 name_sid_pid naming convention, and remove them.
@@ -4604,6 +4604,12 @@ Show help and exit.
 short form: -h; type: string
 
 Connect to host.
+
+=item --mysql_ssl
+
+short form: -s; type: int
+
+Create SSL MySQL connection.
 
 =item --or
 
@@ -4728,8 +4734,8 @@ time.  It can take some time for MySQL to process all the SHOW queries, and
 pt-find can't do anything about that.  These measurements are as of the
 time they're taken.
 
-If you need some test that's not in this list, file a bug report and I'll
-enhance pt-find for you.  It's really easy.
+If you need some test that's not in this list, file a feature request at
+L<https://jira.percona.com/projects/PT>.
 
 =over
 
@@ -4807,14 +4813,11 @@ with.  And perhaps most importantly, if the connection no longer exists, you
 can assume the connection died without cleaning up its tables, and this table
 is a candidate for removal.
 
-This is how I manage scratch tables, and that's why I included this test in
-pt-find.
-
-The argument I use to L<"--connection-id"> is "\D_(\d+)$".  That finds tables
+The argument to use for L<"--connection-id"> is "\D_(\d+)$".  That finds tables
 with a series of numbers at the end, preceded by an underscore and some
-non-number character (the latter criterion prevents me from examining tables
+non-number character (the latter criterion prevents from examining tables
 with a date at the end, which people tend to do: baron_scratch_2007_05_07 for
-example).  It's better to keep the scratch tables separate of course.
+example).  It's better to keep the scratch tables separate.
 
 If you do this, make sure the user pt-find runs as has the PROCESS privilege!
 Otherwise it will only see connections from the same user, and might think some
@@ -4940,15 +4943,15 @@ Table name contains the server ID.  If you create temporary tables with the
 naming convention explained in L<"--connection-id">, but also add the server ID of the
 server on which the tables are created, then you can use this pattern match to
 ensure tables are dropped only on the server they're created on.  This prevents
-a table from being accidentally dropped on a slave while it's in use (provided
+a table from being accidentally dropped on a replica while it's in use (provided
 that your server IDs are all unique, which they should be for replication to
 work).
 
-For example, on the master (server ID 22) you create a table called
-scratch_table_22_12345.  If you see this table on the slave (server ID 23), you
+For example, on the replication source (server ID 22) you create a table called
+scratch_table_22_12345.  If you see this table on the replica (server ID 23), you
 might think it can be dropped safely if there's no such connection 12345.  But
 if you also force the name to match the server ID with C<--server-id '\D_(\d+)_\d+$'>,
-the table won't be dropped on the slave.
+the table won't be dropped on the replica.
 
 =item --tablesize
 
@@ -4998,8 +5001,8 @@ CREATE VIEW matches this pattern.
 =head2 ACTIONS
 
 The L<"--exec-plus"> action happens after everything else, but otherwise actions
-happen in an indeterminate order.  If you need determinism, file a bug report
-and I'll add this feature.
+happen in an indeterminate order.  If you need determinism, file a feature request
+at L<https://jira.percona.com/projects/PT>.
 
 =over
 
@@ -5031,8 +5034,7 @@ You might use this, for example, to drop all the tables you found:
 
    DROP TABLE %s
 
-This is sort of like GNU find's "-exec command {} +" syntax.  Only it's not
-totally cryptic.  And it doesn't require me to write a command-line parser.
+This is sort of like GNU find's "-exec command {} +" syntax.
 
 =item --print
 
@@ -5049,8 +5051,7 @@ Print format on the standard output, interpreting '\' escapes and '%'
 directives.  Escapes are backslashed characters, like \n and \t.  Perl
 interprets these, so you can use any escapes Perl knows about.  Directives are
 replaced by %s, and as of this writing, you can't add any special formatting
-instructions, like field widths or alignment (though I'm musing over ways to do
-that).
+instructions, like field widths or alignment.
 
 Here is a list of the directives.  Note that most of them simply come from
 columns of SHOW TABLE STATUS.  If the column is NULL or doesn't exist, you get
@@ -5141,6 +5142,12 @@ Socket file to use for connection.
 dsn: user; copy: yes
 
 User for login if not current user.
+
+=item * s
+
+dsn: mysql_ssl; copy: yes
+
+Create SSL connection
 
 =back
 

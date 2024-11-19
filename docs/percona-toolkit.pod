@@ -464,6 +464,10 @@ MySQL socket file to use for the connection (on Unix systems).
 
 MySQL username to use when connecting, if not current system user.
 
+=item s
+
+Create SSL connection
+
 =back
 
 =head2 BAREWORD

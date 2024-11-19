@@ -36,12 +36,12 @@ if ($sb->is_cluster_mode) {
     plan skip_all => 'Not for PXC';
 }
 
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave_dbh1 = $sb->get_dbh_for('slave1');
-my $slave_dbh2 = $sb->get_dbh_for('slave2');
-my $master_dsn = 'h=127.0.0.1,P=12345,u=msandbox,p=msandbox';
-my $slave_dsn1 = 'h=127.0.0.1,P=12346,u=msandbox,p=msandbox';
-my $slave_dsn2 = 'h=127.0.0.1,P=12347,u=msandbox,p=msandbox';
+my $source_dbh = $sb->get_dbh_for('source');
+my $replica_dbh1 = $sb->get_dbh_for('replica1');
+my $replica_dbh2 = $sb->get_dbh_for('replica2');
+my $source_dsn = 'h=127.0.0.1,P=12345,u=msandbox,p=msandbox';
+my $replica_dsn1 = 'h=127.0.0.1,P=12346,u=msandbox,p=msandbox';
+my $replica_dsn2 = 'h=127.0.0.1,P=12347,u=msandbox,p=msandbox';
 my $sample     = "t/pt-online-schema-change/samples";
 my $plugin     = "$trunk/$sample/plugins";
 
@@ -59,7 +59,7 @@ diag(`/tmp/12347/start >/dev/null`);
 
 sub reset_query_cache {
     my @dbhs = @_;
-    return if ($sandbox_version >= '8.0');
+    return if ($sandbox_version ge '8.0');
     foreach my $dbh (@dbhs) {
         $dbh->do('RESET QUERY CACHE');
     }
@@ -77,7 +77,7 @@ sub run_broken_job {
    }
 
    sleep($max_lag + $max_lag/2);
-   # stop slave 12347
+   # stop replica 12347
    diag(`/tmp/12347/stop >/dev/null`);
    sleep 1;
 
@@ -91,38 +91,38 @@ sub run_broken_job {
 }
 
 sub set_delay {
-   $sb->wait_for_slaves();
+   $sb->wait_for_replicas();
 
-   diag("Setting slave delay to $delay seconds");
+   diag("Setting replica delay to $delay seconds");
    diag(`/tmp/12345/use -N test -e "DROP TABLE IF EXISTS pt1717_back"`);
 
-   $slave_dbh1->do('STOP SLAVE');
-   $slave_dbh1->do("CHANGE MASTER TO MASTER_DELAY=$delay");
-   $slave_dbh1->do('START SLAVE');
+   $replica_dbh1->do("STOP ${replica_name}");
+   $replica_dbh1->do("CHANGE ${source_change} TO ${source_name}_DELAY=$delay");
+   $replica_dbh1->do("START ${replica_name}");
 
-   # Run a full table scan query to ensure the slave is behind the master
+   # Run a full table scan query to ensure the replica is behind the source
    # There is no query cache in MySQL 8.0+
-   reset_query_cache($master_dbh, $master_dbh);
-   # Update one row so slave is delayed
-   $master_dbh->do('UPDATE `test`.`pt1717` SET f2 = f2 + 1 LIMIT 1');
-   $master_dbh->do('UPDATE `test`.`pt1717` SET f2 = f2 + 1 WHERE f1 = ""');
+   reset_query_cache($source_dbh, $source_dbh);
+   # Update one row so replica is delayed
+   $source_dbh->do('UPDATE `test`.`pt1717` SET f2 = f2 + 1 LIMIT 1');
+   $source_dbh->do('UPDATE `test`.`pt1717` SET f2 = f2 + 1 WHERE f1 = ""');
 
    # Creating copy of table pt1717, so we can compare data later
    diag(`/tmp/12345/use -N test -e "CREATE TABLE pt1717_back like pt1717"`);
    diag(`/tmp/12345/use -N test -e "INSERT INTO pt1717_back SELECT * FROM pt1717"`);
 }
 
-# 1) Set the slave delay to 0 just in case we are re-running the tests without restarting the sandbox.
+# 1) Set the replica delay to 0 just in case we are re-running the tests without restarting the sandbox.
 # 2) Load sample data
-# 3) Set the slave delay to 30 seconds to be able to see the 'waiting' message.
-diag("Setting slave delay to 0 seconds");
-$slave_dbh1->do('STOP SLAVE');
-$master_dbh->do("RESET MASTER");
-$slave_dbh1->do('RESET SLAVE');
-$slave_dbh1->do('START SLAVE');
+# 3) Set the replica delay to 30 seconds to be able to see the 'waiting' message.
+diag("Setting replica delay to 0 seconds");
+$replica_dbh1->do("STOP ${replica_name}");
+$source_dbh->do("RESET ${source_reset}");
+$replica_dbh1->do("RESET ${replica_name}");
+$replica_dbh1->do("START ${replica_name}");
 
 diag('Loading test data');
-$sb->load_file('master', "t/pt-online-schema-change/samples/pt-1717.sql");
+$sb->load_file('source', "t/pt-online-schema-change/samples/pt-1717.sql");
 
 # Should be greater than chunk-size and big enough, so pt-osc will wait for delay
 my $num_rows = 5000;
@@ -134,10 +134,10 @@ diag("Starting tests...");
 
 set_delay();
 
-# We need to sleep, otherwise pt-osc can finish before slave is delayed
+# We need to sleep, otherwise pt-osc can finish before replica is delayed
 sleep($max_lag);
 
-my $args = "$master_dsn,D=test,t=pt1717 --execute --chunk-size ${chunk_size} --max-lag $max_lag --alter 'engine=INNODB' --pid $tmp_file_name --progress time,5 --no-drop-new-table --no-drop-triggers --history";
+my $args = "$source_dsn,D=test,t=pt1717 --execute --chunk-size ${chunk_size} --max-lag $max_lag --alter 'engine=INNODB' --pid $tmp_file_name --progress time,5 --no-drop-new-table --no-drop-triggers --history";
 
 $output = run_broken_job($args);
 
@@ -148,7 +148,7 @@ like(
 ) or diag($output);
 
 diag(`/tmp/12347/start >/dev/null`);
-$sb->wait_for_slaves();
+$sb->wait_for_replicas();
 
 $output = `/tmp/12345/use -N -e "select job_id, upper_boundary from percona.pt_osc_history"`;
 my ($job_id, $upper_boundary) = split(/\s+/, $output);
@@ -164,7 +164,7 @@ ok(
 my @args = (qw(--execute --chunk-size=10 --history));
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--alter', 'engine=INNODB', '--execute', "--resume=${job_id}",
          '--chunk-index=f2'
          ) }
@@ -183,7 +183,7 @@ like(
 ) or diag($output);
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--max-lag', $max_lag,
          '--resume', $job_id,
          '--alter', 'engine=INNODB',
@@ -209,7 +209,7 @@ ok(
 ) or diag("New table checksum: '${new_table_checksum}', original content checksum: '${old_table_checksum}'");
 
 # Tests for chunk-index and chunk-index-columns options
-$args = "$master_dsn,D=test,t=pt1717 --alter engine=innodb --execute --history --chunk-size=10 --no-drop-new-table --no-drop-triggers --reverse-triggers --chunk-index=f2";
+$args = "$source_dsn,D=test,t=pt1717 --alter engine=innodb --execute --history --chunk-size=10 --no-drop-new-table --no-drop-triggers --reverse-triggers --chunk-index=f2";
 
 set_delay();
 $output = run_broken_job($args);
@@ -219,7 +219,7 @@ $output =~ /History saved. Job id: (\d+)/ms;
 $job_id = $1;
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--alter', 'engine=innodb', '--execute', "--resume=${job_id}",
          ) }
 );
@@ -237,7 +237,7 @@ like(
 ) or diag($output);
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--alter', 'engine=innodb', '--execute', "--resume=${job_id}",
          '--chunk-index=f1'
          ) }
@@ -256,7 +256,7 @@ like(
 ) or diag($output);
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--alter', 'engine=innodb', '--execute', "--resume=${job_id}",
          '--chunk-index=f2', '--chunk-index-columns=1'
          ) }
@@ -299,7 +299,7 @@ is(
 );
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--alter', 'engine=innodb', '--execute', "--resume=${job_id}",
          '--chunk-size=4',
          '--chunk-index=f2'
@@ -347,7 +347,7 @@ ok(
 `/tmp/12345/use test -N -e "UPDATE percona.pt_osc_history SET done = 'no' where job_id='${job_id}'"`;
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--alter', 'engine=innodb', '--execute', "--resume=${job_id}",
          '--chunk-size=4',
          '--chunk-index=f2'
@@ -371,7 +371,7 @@ $output =~ /New table `test`.`([_]+pt1717_new)` not found, restart operation fro
 `/tmp/12345/use test -N -e "CREATE TABLE $1 LIKE pt1717"`;
 
 ($output, $exit) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=pt1717",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=pt1717",
          '--alter', 'engine=innodb', '--execute', "--resume=${job_id}",
          '--chunk-size=4',
          '--chunk-index=f2'
@@ -394,16 +394,16 @@ like(
 # Done.
 # #############################################################################
 diag("Cleaning");
-$slave_dbh2 = $sb->get_dbh_for('slave2');
-diag("Setting slave delay to 0 seconds");
-$slave_dbh1->do('STOP SLAVE');
-$slave_dbh2->do('STOP SLAVE');
-$master_dbh->do('RESET MASTER');
-$slave_dbh1->do('RESET MASTER');
-$slave_dbh1->do('RESET SLAVE');
-$slave_dbh2->do('RESET SLAVE');
-$slave_dbh1->do('START SLAVE');
-$slave_dbh2->do('START SLAVE');
+$replica_dbh2 = $sb->get_dbh_for('replica2');
+diag("Setting replica delay to 0 seconds");
+$replica_dbh1->do("STOP ${replica_name}");
+$replica_dbh2->do("STOP ${replica_name}");
+$source_dbh->do("RESET ${source_reset}");
+$replica_dbh1->do("RESET ${source_reset}");
+$replica_dbh1->do("RESET ${replica_name}");
+$replica_dbh2->do("RESET ${replica_name}");
+$replica_dbh1->do("START ${replica_name}");
+$replica_dbh2->do("START ${replica_name}");
 
 diag(`mv $cnf.bak $cnf`);
 
@@ -411,9 +411,9 @@ diag(`/tmp/12347/stop >/dev/null`);
 diag(`/tmp/12347/start >/dev/null`);
 
 diag("Dropping test database");
-$master_dbh->do("DROP DATABASE IF EXISTS test");
-$sb->wait_for_slaves();
+$source_dbh->do("DROP DATABASE IF EXISTS test");
+$sb->wait_for_replicas();
 
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

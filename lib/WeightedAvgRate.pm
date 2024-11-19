@@ -67,7 +67,7 @@ sub new {
 #   n adjust to meet target_t based on weighted decaying avg rate
 sub update {
    my ($self, $n, $t) = @_;
-   PTDEBUG && _d('Master op time:', $n, 'n /', $t, 's');
+   PTDEBUG && _d('Source op time:', $n, 'n /', $t, 's');
 
    if ( $self->{avg_n} && $self->{avg_t} ) {
       $self->{avg_n}    = ($self->{avg_n} * $self->{weight}) + $n;

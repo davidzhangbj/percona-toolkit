@@ -856,6 +856,11 @@ tool to diagnose an unresponsive server, there is really no reason not to do
 this.  In addition to freezing the server, there is also some risk of the server
 crashing or performing badly after GDB detaches from it.
 
+Dumpers C<eu> and C<pteu> use eu-stack (L<https://sourceware.org/elfutils/>) instead of GDB.
+eu-stack collects stacks with minimal impact and does not cause same issues as GDB
+does. Dumpers C<eu> and C<pteu> are recommended to use instead of GDB and one of them
+will be default dumper in future versions.
+
 =head1 OPTIONS
 
 =over

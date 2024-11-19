@@ -84,7 +84,7 @@ check_workdir(){
 add_percona_yum_repo(){
     yum -y install https://repo.percona.com/yum/percona-release-latest.noarch.rpm
     percona-release disable all
-    percona-release enable ppg-11.19 testing
+    percona-release enable ppg-12.20 testing
     return
 }
 
@@ -166,7 +166,12 @@ install_go() {
     #mv go1.9 /usr/local/
     #ln -s /usr/local/go1.9 /usr/local/go
     GO_VERSION=1.22.4
-    wget --progress=dot:giga https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz -O /tmp/golang.tar.gz
+    if [ x"$ARCH" = "xx86_64" ]; then
+      GO_ARCH="amd64"
+    elif [ x"$ARCH" = "xaarch64" ]; then
+      GO_ARCH="arm64"
+    fi
+    wget --progress=dot:giga https://dl.google.com/go/go${GO_VERSION}.linux-${GO_ARCH}.tar.gz -O /tmp/golang.tar.gz
     tar -C /usr/local -xzf /tmp/golang.tar.gz
     update-alternatives --install "/usr/bin/go" "go" "/usr/local/go/bin/go" 0
     update-alternatives --set go /usr/local/go/bin/go
@@ -189,12 +194,17 @@ update_go() {
     cd ${PRODUCT}
     go get -u github.com/golang/dep/cmd/dep
     go install ./...
-    wget https://github.com/Masterminds/glide/releases/download/v0.13.3/glide-v0.13.3-linux-amd64.tar.gz
-    tar -xvzf glide-v0.13.3-linux-amd64.tar.gz
-    cp -p linux-amd64/glide /usr/local/go/bin
+    if [ x"$ARCH" = "xx86_64" ]; then
+      GO_ARCH="amd64"
+    elif [ x"$ARCH" = "xaarch64" ]; then
+      GO_ARCH="arm64"
+    fi
+    wget https://github.com/Masterminds/glide/releases/download/v0.13.3/glide-v0.13.3-linux-${GO_ARCH}.tar.gz
+    tar -xvzf glide-v0.13.3-linux-${GO_ARCH}.tar.gz
+    cp -p linux-${GO_ARCH}/glide /usr/local/go/bin
     go get github.com/pkg/errors
-    wget --no-check-certificate https://github.com/golang/dep/releases/download/v0.5.4/dep-linux-amd64
-    mv dep-linux-amd64 /usr/local/go/bin/dep
+    wget --no-check-certificate https://github.com/golang/dep/releases/download/v0.5.4/dep-linux-${GO_ARCH}
+    mv dep-linux-${GO_ARCH} /usr/local/go/bin/dep
     go install github.com/pkg/errors
 }
 
@@ -323,7 +333,12 @@ build_srpm(){
     cd ${WORKDIR}/rpmbuild/SPECS
     echo '%undefine _missing_build_ids_terminate_build' | cat - percona-toolkit.spec > pt.spec && mv pt.spec percona-toolkit.spec
     echo '%define debug_package %{nil}' | cat - percona-toolkit.spec > pt.spec && mv pt.spec percona-toolkit.spec
-    sed -i "s/@@ARCHITECTURE@@/x86_64/" percona-toolkit.spec
+    if [ x"$ARCH" = "xaarch64" ]; then
+	sed -i "s/@@ARCHITECTURE@@/aarch64/" percona-toolkit.spec
+    else
+	sed -i "s/@@ARCHITECTURE@@/x86_64/" percona-toolkit.spec
+    fi
+
     cd ${WORKDIR}/${PRODUCT_FULL}
     rm -rf bin/govendor
     rm -rf bin/glide
@@ -417,7 +432,11 @@ build_source_deb(){
     mv ${TARFILE} ${PRODUCT}_${VERSION}.orig.tar.gz
     update_go
     cd ${WORKDIR}/${BUILDDIR}
-    sed -i 's/@@ARCHITECTURE@@/amd64/' debian/control
+    if [ x"$ARCH" = "xaarch64" ]; then
+	sed -i 's/@@ARCHITECTURE@@/arm64/' debian/control
+    else
+	sed -i 's/@@ARCHITECTURE@@/amd64/' debian/control
+    fi
     cd debian
     echo "${PRODUCT} (${VERSION}) unstable; urgency=low" > changelog
     echo "  * Initial Release." >> changelog
@@ -510,6 +529,11 @@ build_deb(){
     #
     cd ${PRODUCT}-${VERSION}
     echo 9 > debian/compat
+    if [ x"$ARCH" = "xaarch64" ]; then
+        sed -i 's/@@ARCHITECTURE@@/arm64/' debian/control
+    else
+        sed -i 's/@@ARCHITECTURE@@/amd64/' debian/control
+    fi
     export GOBINPATH="$(pwd)/go/bin"
     echo ${GOBINPATH}
     cp /usr/local/go/bin/dep ${GOBINPATH}/
@@ -517,7 +541,11 @@ build_deb(){
     rm -rf bin/pt-mongo*
     cd src/go
     sed -i "s|dep ensure|${GOBINPATH}/dep ensure|g" Makefile
-    VERSION=$VERSION make linux-amd64
+    if [ x"$ARCH" = "xx86_64" ]; then
+	VERSION=$VERSION make linux-amd64
+    else
+	VERSION=$VERSION make linux-arm64
+    fi
     cd ../../
     dch -b -m -D "all" --force-distribution -v "${VERSION}-${DEB_RELEASE}.${DEBIAN_VERSION}" 'Update distribution'
     dpkg-buildpackage -rfakeroot -us -uc -b

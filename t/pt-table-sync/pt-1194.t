@@ -17,19 +17,19 @@ require "$trunk/bin/pt-table-sync";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave1_dbh = $sb->get_dbh_for('slave1');
-my $slave2_dbh = $sb->get_dbh_for('slave2');
+my $source_dbh = $sb->get_dbh_for('source');
+my $replica1_dbh = $sb->get_dbh_for('replica1');
+my $replica2_dbh = $sb->get_dbh_for('replica2');
 my $have_ncat = `which ncat 2>/dev/null`;
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
-elsif ( !$slave1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave1';
+elsif ( !$replica1_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica1';
 }
-elsif ( !$slave1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave2';
+elsif ( !$replica1_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica2';
 }
 elsif (!$have_ncat) {
    plan skip_all => 'ncat, required for this test, is not installed or not in PATH';
@@ -38,8 +38,8 @@ else {
    plan tests => 3;
 }
 
-$sb->load_file('master', "t/pt-table-sync/samples/pt-1205.sql");
-$sb->wait_for_slaves();
+$sb->load_file('source', "t/pt-table-sync/samples/pt-1205.sql");
+$sb->wait_for_replicas();
 
 # Setting up tunnels
 my $pid1 = fork();
@@ -65,42 +65,42 @@ my $ms = new MasterSlave(
                DSNParser=>$dp,
                Quoter=>$q,
             );
-my $ss = $ms->get_slave_status($slave1_dbh);
+my $ss = $ms->get_replica_status($replica1_dbh);
 
-$slave1_dbh->do('STOP SLAVE');
-$slave1_dbh->do("CHANGE MASTER TO MASTER_PORT=3333, MASTER_LOG_POS=$ss->{exec_master_log_pos}");
-$slave1_dbh->do('START SLAVE');
+$replica1_dbh->do("STOP ${replica_name}");
+$replica1_dbh->do("CHANGE ${source_change} TO ${source_name}_PORT=3333, ${source_name}_LOG_POS=" . $ss->{"exec_${source_name}_log_pos"});
+$replica1_dbh->do("START ${replica_name}");
 
-my $output = `$trunk/bin/pt-table-sync h=127.0.0.1,P=3334,u=msandbox,p=msandbox --database=test --table=t1 --sync-to-master --execute --verbose 2>&1`;
+my $output = `$trunk/bin/pt-table-sync h=127.0.0.1,P=3334,u=msandbox,p=msandbox --database=test --table=t1 --sync-to-source --execute --verbose 2>&1`;
 
 unlike(
    $output,
-   qr/The slave is connected to \d+ but the master's port is/,
+   qr/The replica is connected to \d+ but the source's port is/,
    'No error for redirected replica'
 ) or diag($output);
 
 kill -1, getpgrp($pid1);
 kill -1, getpgrp($pid2);
 
-$slave1_dbh->do('STOP SLAVE');
-$ss = $ms->get_slave_status($slave1_dbh);
-$slave1_dbh->do("CHANGE MASTER TO MASTER_PORT=12347, MASTER_LOG_POS=$ss->{exec_master_log_pos}");
-$slave1_dbh->do('START SLAVE SQL_THREAD');
+$replica1_dbh->do("STOP ${replica_name}");
+$ss = $ms->get_replica_status($replica1_dbh);
+$replica1_dbh->do("CHANGE ${source_change} TO ${source_name}_PORT=12347, ${source_name}_LOG_POS=" . $ss->{"exec_${source_name}_log_pos"});
+$replica1_dbh->do("START ${replica_name} SQL_THREAD");
 
-$output = `$trunk/bin/pt-table-sync h=127.0.0.1,P=12346,u=msandbox,p=msandbox --database=test --table=t1 --sync-to-master --execute --verbose 2>&1`;
+$output = `$trunk/bin/pt-table-sync h=127.0.0.1,P=12346,u=msandbox,p=msandbox --database=test --table=t1 --sync-to-source --execute --verbose 2>&1`;
 
 like(
    $output,
-   qr/The server specified as a master has no connected slaves/,
-   'Error printed for the wrong master'
+   qr/The server specified as a source has no connected replicas/,
+   'Error printed for the wrong source'
 ) or diag($output);
 
-$slave1_dbh->do('STOP SLAVE');
-$slave1_dbh->do("CHANGE MASTER TO MASTER_PORT=12345, MASTER_LOG_POS=$ss->{exec_master_log_pos}");
-$slave1_dbh->do('START SLAVE');
+$replica1_dbh->do("STOP ${replica_name}");
+$replica1_dbh->do("CHANGE ${source_change} TO ${source_name}_PORT=12345, ${source_name}_LOG_POS=" . $ss->{"exec_${source_name}_log_pos"});
+$replica1_dbh->do("START ${replica_name}");
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 exit;

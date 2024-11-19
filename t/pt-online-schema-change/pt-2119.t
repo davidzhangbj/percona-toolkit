@@ -19,13 +19,13 @@ require "$trunk/bin/pt-online-schema-change";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
+my $source_dbh = $sb->get_dbh_for('source');
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
-my $vp = VersionParser->new($master_dbh);
+my $vp = VersionParser->new($source_dbh);
 
 if ( $vp->cmp('8.0.14') < 0 || $vp->cmp('8.0.17') >= 0 || $vp->flavor() =~ m/maria/i ) {
    plan skip_all => 'Test requires versions between 8.0.14 and 8.0.17';
@@ -34,18 +34,18 @@ if ( $vp->cmp('8.0.14') < 0 || $vp->cmp('8.0.17') >= 0 || $vp->flavor() =~ m/mar
 # The sandbox servers run with lock_wait_timeout=3 and it's not dynamic
 # so we need to specify --set-vars innodb_lock_wait_timeout=3 else the
 # tool will die.
-my $master_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
+my $source_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
 my @args       = (qw(--set-vars innodb_lock_wait_timeout=3));
 my $sample     = "t/pt-online-schema-change/samples/";
 my $plugin     = "$trunk/$sample/plugins";
 my $output;
 my $exit_status;
 
-$sb->load_file('master', "$sample/pt-2119.sql");
+$sb->load_file('source', "$sample/pt-2119.sql");
 
 ($output, $exit_status) = full_output(
    sub { pt_online_schema_change::main(@args,
-      "$master_dsn,D=pt_osc,t=t",
+      "$source_dsn,D=pt_osc,t=t",
       "--alter", "ENGINE=InnoDB",
       '--execute') },
 );
@@ -64,7 +64,7 @@ like(
 
 ($output, $exit_status) = full_output(
    sub { pt_online_schema_change::main(@args,
-      "$master_dsn,D=pt_osc,t=person",
+      "$source_dsn,D=pt_osc,t=person",
       "--alter", "ENGINE=InnoDB",
       '--execute') },
 );
@@ -83,7 +83,7 @@ like(
 
 ($output, $exit_status) = full_output(
    sub { pt_online_schema_change::main(@args,
-      "$master_dsn,D=pt_osc,t=test_table",
+      "$source_dsn,D=pt_osc,t=test_table",
       "--alter", "ENGINE=InnoDB",
       '--execute') },
 );
@@ -102,6 +102,6 @@ like(
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

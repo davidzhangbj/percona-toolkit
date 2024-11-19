@@ -39,9 +39,9 @@ use constant PTDEBUG => $ENV{PTDEBUG} || 0;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh      = $sb->get_dbh_for('master');
-my $src_dbh  = $sb->get_dbh_for('master');
-my $dst_dbh  = $sb->get_dbh_for('slave1');
+my $dbh      = $sb->get_dbh_for('source');
+my $src_dbh  = $sb->get_dbh_for('source');
+my $dst_dbh  = $sb->get_dbh_for('replica1');
 
 if ( !$src_dbh || !$dbh ) {
    plan skip_all => 'Cannot connect to sandbox master';
@@ -50,8 +50,10 @@ elsif ( !$dst_dbh ) {
    plan skip_all => 'Cannot connect to sandbox slave';
 }
 
+my $vp = VersionParser->new($dbh);
+
 $sb->create_dbs($dbh, ['test']);
-$sb->load_file('master', 't/lib/samples/before-TableSyncChunk.sql');
+$sb->load_file('source', 't/lib/samples/before-TableSyncChunk.sql');
 
 my $q  = new Quoter();
 my $tp = new TableParser(Quoter=>$q);
@@ -565,8 +567,8 @@ SKIP: {
    # a lock.
    $src_dbh->disconnect();
    $dst_dbh->disconnect();
-   $src_dbh = $sb->get_dbh_for('master');
-   $dst_dbh = $sb->get_dbh_for('slave1');
+   $src_dbh = $sb->get_dbh_for('source');
+   $dst_dbh = $sb->get_dbh_for('replica1');
 
    $src->{dbh} = $src_dbh;
    $dst->{dbh} = $dst_dbh;
@@ -575,7 +577,7 @@ SKIP: {
 # Test TableSyncGroupBy.
 # ###########################################################################
 make_plugins();
-$sb->load_file('master', 't/lib/samples/before-TableSyncGroupBy.sql');
+$sb->load_file('source', 't/lib/samples/before-TableSyncGroupBy.sql');
 
 sync_table(
    src     => "test.test1",
@@ -604,7 +606,7 @@ is_deeply(
 # Issue 96: mk-table-sync: Nibbler infinite loop
 # #############################################################################
 make_plugins();
-$sb->load_file('master', 't/lib/samples/issue_96.sql');
+$sb->load_file('source', 't/lib/samples/issue_96.sql');
 
 # Make paranoid-sure that the tables differ.
 my $r1 = $src_dbh->selectall_arrayref('SELECT from_city FROM issue_96.t WHERE package_id=4');
@@ -703,8 +705,8 @@ is_deeply(
 # #############################################################################
 # Issue 464: Make mk-table-sync do two-way sync
 # #############################################################################
-diag(`$trunk/sandbox/start-sandbox master 12348 >/dev/null`);
-my $dbh3 = $sb->get_dbh_for('master1');
+diag(`$trunk/sandbox/start-sandbox source 12348 >/dev/null`);
+my $dbh3 = $sb->get_dbh_for('source1');
 SKIP: {
    skip 'Cannot connect to sandbox master', 7 unless $dbh;
    skip 'Cannot connect to second sandbox master', 7 unless $dbh3;
@@ -775,11 +777,11 @@ SKIP: {
    # First bidi test with chunk size=2, roughly 9 chunks.
    # ########################################################################
    # Load "master" data.
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/master-data.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/master-data.sql');
    # Load remote data.
-   $sb->load_file('master1', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master1', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
+   $sb->load_file('source1', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source1', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
    make_plugins();
    set_bidi_callbacks();
    $tbl_struct = $tp->parse($tp->get_create_table($src_dbh, 'bidi', 't'));
@@ -822,10 +824,10 @@ SKIP: {
    # ########################################################################
    # Test it again with a larger chunk size, roughly half the table.
    # ########################################################################
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/master-data.sql');
-   $sb->load_file('master1', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master1', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/master-data.sql');
+   $sb->load_file('source1', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source1', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
    make_plugins();
    set_bidi_callbacks();
    $args{ChangeHandler} = new_ch($dbh3, 0);
@@ -850,10 +852,10 @@ SKIP: {
    # ########################################################################
    # Chunk whole table.
    # ########################################################################
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master', 't/pt-table-sync/samples/bidirectional/master-data.sql');
-   $sb->load_file('master1', 't/pt-table-sync/samples/bidirectional/table.sql');
-   $sb->load_file('master1', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source', 't/pt-table-sync/samples/bidirectional/master-data.sql');
+   $sb->load_file('source1', 't/pt-table-sync/samples/bidirectional/table.sql');
+   $sb->load_file('source1', 't/pt-table-sync/samples/bidirectional/remote-1.sql');
    make_plugins();
    set_bidi_callbacks();
    $args{ChangeHandler} = new_ch($dbh3, 0);
@@ -895,9 +897,9 @@ SKIP: {
 make_plugins();
 # Sandbox::get_dbh_for() defaults to AutoCommit=1.  Autocommit must
 # be off else commit() will cause an error.
-$dbh      = $sb->get_dbh_for('master', {AutoCommit=>0});
-$src_dbh  = $sb->get_dbh_for('master', {AutoCommit=>0});
-$dst_dbh  = $sb->get_dbh_for('slave1', {AutoCommit=>0});
+$dbh      = $sb->get_dbh_for('source', {AutoCommit=>0});
+$src_dbh  = $sb->get_dbh_for('source', {AutoCommit=>0});
+$dst_dbh  = $sb->get_dbh_for('replica1', {AutoCommit=>0});
 
 sync_table(
    src         => "test.test1",
@@ -945,7 +947,7 @@ like(
 # Issue 672: mk-table-sync should COALESCE to avoid undef
 # #############################################################################
 make_plugins();
-$sb->load_file('master', "t/lib/samples/empty_tables.sql");
+$sb->load_file('source', "t/lib/samples/empty_tables.sql");
 
 foreach my $sync( $sync_chunk, $sync_nibble, $sync_groupby ) {
    sync_table(
@@ -974,7 +976,7 @@ foreach my $sync( $sync_chunk, $sync_nibble, $sync_groupby ) {
 # #############################################################################
 # Retry wait.
 # #############################################################################
-diag(`/tmp/12346/use -e "stop slave"`);
+diag(`/tmp/12346/use -e "stop ${replica_name}"`);
 my $output = '';
 {
    local *STDERR;
@@ -1002,13 +1004,13 @@ my $output = '';
             },
          );
       },
-      qr/Slave did not catch up to its master after 2 attempts of waiting 60/,
+      qr/Replica did not catch up to its source after 2 attempts of waiting 60/,
       "Retries wait"
    );
 }
-diag(`/tmp/12347/use -e "stop slave"`);
-diag(`/tmp/12346/use -e "start slave"`);
-diag(`/tmp/12347/use -e "start slave"`);
+diag(`/tmp/12347/use -e "stop ${replica_name}"`);
+diag(`/tmp/12346/use -e "start ${replica_name}"`);
+diag(`/tmp/12347/use -e "start ${replica_name}"`);
 
 # #############################################################################
 # Done.
@@ -1023,6 +1025,7 @@ like(
    qr/Complete test coverage/,
    '_d() works'
 );
+
 $src_dbh->disconnect() if $src_dbh;
 $dst_dbh->disconnect() if $dst_dbh;
 $sb->wipe_clean($dbh);

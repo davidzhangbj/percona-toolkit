@@ -17,10 +17,10 @@ require "$trunk/bin/pt-archiver";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 my $output;
@@ -30,7 +30,7 @@ my $cnf = "/tmp/12345/my.sandbox.cnf";
 my $cmd = "$trunk/bin/pt-archiver";
 
 $sb->create_dbs($dbh, ['test']);
-$sb->load_file('master', 't/pt-archiver/samples/table1.sql');
+$sb->load_file('source', 't/pt-archiver/samples/table1.sql');
 
 # Archive to a file.
 `rm -f archive.test.table_1`;

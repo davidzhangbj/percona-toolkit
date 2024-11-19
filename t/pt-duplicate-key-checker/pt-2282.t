@@ -11,16 +11,17 @@ use warnings FATAL => 'all';
 use English qw(-no_match_vars);
 use Test::More;
 
+require VersionParser;
 use PerconaTest;
 use Sandbox;
 require "$trunk/bin/pt-duplicate-key-checker";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 else {
    plan tests => 5;
@@ -36,7 +37,7 @@ $sb->create_dbs($dbh, ['test']);
 # #############################################################################
 # PT-2282: pt-duplicate-key-checker give a "Wide character in print" warning
 # #############################################################################
-$sb->load_file('master', 't/pt-duplicate-key-checker/samples/pt-2282.sql');
+$sb->load_file('source', 't/pt-duplicate-key-checker/samples/pt-2282.sql');
 $output = `$cmd -d test -t season_pk_historties_60 `;
 unlike(
    $output,

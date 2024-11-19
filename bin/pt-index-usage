@@ -275,7 +275,7 @@ sub get_cxn_params {
       $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
          . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
                      grep { defined $info->{$_} }
-                     qw(F h P S A))
+                     qw(F h P S A s))
          . ';mysql_read_default_group=client'
          . ($info->{L} ? ';mysql_local_infile=1' : '');
    }
@@ -3393,7 +3393,7 @@ sub get_keys {
          ddl          => $key_ddl,
       };
 
-      if ( ($engine || '') =~ m/InnoDB/i && !$clustered_key ) {
+      if ( ($engine || '') =~ m/(InnoDB)|(TokuDB)|(RocksDB)/i && !$clustered_key ) {
          my $this_key = $keys->{$name};
          if ( $this_key->{name} eq 'PRIMARY' ) {
             $clustered_key = 'PRIMARY';
@@ -7170,12 +7170,7 @@ cases where it fails, submit a bug report and a reproducible test case.
 
 Queries that cannot be EXPLAINed will cause all subsequent queries with the
 same fingerprint to be blacklisted.  This is to reduce the work they cause, and
-prevent them from continuing to print error messages.  However, at least in
-this stage of the tool's development, it is my opinion that it's not a good
-idea to preemptively silence these, or prevent them from being EXPLAINed at
-all.  I am looking for lots of feedback on how to improve things like the
-query parsing.  So please submit your test cases based on the errors the tool
-prints!
+prevent them from continuing to print error messages.
 
 =head1 OUTPUT
 
@@ -7313,6 +7308,12 @@ type: string
 
 Ignore tables whose names match the Perl regex.
 
+=item --mysql_ssl
+
+short form: -s; type: int
+
+Create SSL MySQL connection.
+
 =item --password
 
 short form: -p; type: string
@@ -7375,8 +7376,6 @@ pt-index-usage executes INSERT statements to save the results.  Therefore, you
 should be careful if you use this feature on a production server.  It might
 increase load, or cause trouble if you don't want the server to be written to,
 or so on.
-
-This is a new feature.  It may change in future releases.
 
 After a run, you can query the usage tables to answer various questions about
 index usage.  The tables have the following CREATE TABLE definitions:
@@ -7660,6 +7659,12 @@ Socket file to use for connection.
 dsn: user; copy: yes
 
 User for login if not current user.
+
+=item * s
+
+dsn: mysql_ssl; copy: yes
+
+Create SSL connection
 
 =back
 

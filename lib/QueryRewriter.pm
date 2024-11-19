@@ -274,7 +274,7 @@ sub distill_verbs {
    $query = $self->strip_comments($query);
 
    # SHOW statements are either 2 or 3 words: SHOW A (B), where A and B
-   # are words; B is optional.  E.g. "SHOW TABLES" or "SHOW SLAVE STATUS".
+   # are words; B is optional.  E.g. "SHOW TABLES" or "SHOW REPLICA STATUS".
    # There's a few common keywords that may show up in place of A, so we
    # remove them first.  Then there's some keywords that signify extra clauses
    # that may show up in place of B and since these clauses are at the

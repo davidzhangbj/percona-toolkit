@@ -18,19 +18,20 @@ use TableParser;
 use Quoter;
 use SlowLogParser;
 use DSNParser;
+use VersionParser;
 use Sandbox;
 use PerconaTest;
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master', {no_lc=>1, AutoCommit => 1});
+my $dbh = $sb->get_dbh_for('source', {no_lc=>1, AutoCommit => 1});
 
 if ( !$dbh ) {
    plan skip_all => "Cannot connect to sandbox master";
 }
 
 $sb->create_dbs($dbh, ['test']);
-$sb->load_file('master', "t/lib/samples/query_review.sql");
+$sb->load_file('source', "t/lib/samples/query_review.sql");
 my $output = "";
 my $qr = new QueryRewriter();
 my $lp = new SlowLogParser;

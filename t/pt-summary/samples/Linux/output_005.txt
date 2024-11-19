@@ -160,5 +160,4 @@ Unable to collect information
    0  0     0    0     0     0    150    100   0   0 100   0   0
    0  0     0    0     0     0    125    100   0   0 100   0   0
 # Memory management ##########################################
-Transparent huge pages are enabled.
 # The End ####################################################

@@ -18,23 +18,23 @@ require "$trunk/bin/pt-table-checksum";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-    plan skip_all => 'Cannot connect to sandbox master';
-} elsif (!$sb->has_engine('master', 'ROCKSDB')) {
+    plan skip_all => 'Cannot connect to sandbox source';
+} elsif (!$sb->has_engine('source', 'ROCKSDB')) {
     plan skip_all => 'These tests need RocksDB';
 } else {
     plan tests => 9;
 }
 
-$sb->load_file('master', 't/pt-table-checksum/samples/pt-204.sql');
+$sb->load_file('source', 't/pt-table-checksum/samples/pt-204.sql');
 
 # The sandbox servers run with lock_wait_timeout=3 and it's not dynamic
 # so we need to specify --set-vars innodb_lock_wait_timeout=3 else the tool will die.
 # And --max-load "" prevents waiting for status variables.
-my $master_dsn = $sb->dsn_for('master');
-my @args       = ($master_dsn, "--set-vars", "innodb_lock_wait_timeout=50", 
+my $source_dsn = $sb->dsn_for('source');
+my @args       = ($source_dsn, "--set-vars", "innodb_lock_wait_timeout=50", 
                                "--no-check-binlog-format"); 
 my ($output, $exit_status);
 
@@ -70,7 +70,7 @@ like(
    stderr => 1,
 );
 
-my $return_code = ($sandbox_version >= '5.7') ? 16 : 0;
+my $return_code = ($sandbox_version ge '5.7') ? 16 : 0;
 
 is(
    $exit_status,

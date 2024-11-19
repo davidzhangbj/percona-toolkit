@@ -940,7 +940,7 @@ sub get_cxn_params {
       $dsn = 'DBI:mysql:' . ( $info->{D} || '' ) . ';'
          . join(';', map  { "$opts{$_}->{dsn}=$info->{$_}" }
                      grep { defined $info->{$_} }
-                     qw(F h P S A))
+                     qw(F h P S A s))
          . ';mysql_read_default_group=client'
          . ($info->{L} ? ';mysql_local_infile=1' : '');
    }
@@ -10835,7 +10835,7 @@ while pt-upgrade is running, the report could contain more false-positives
 than legitimate differences.  B<pt-upgrade assumes that both MySQL servers
 are static, unchanging (except for any changes made by the tool if ran
 with C<--no-read-only>).>  A read-only workload shouldn't affect the tool,
-except maybe query times, so read-only slaves could be used.
+except maybe query times, so read-only replicas could be used.
 
 =head2 COMPARED TO
 
@@ -10874,8 +10874,8 @@ pt-upgrade runs with C<autocommit=1> by default.
 =head2 THROTTLING
 
 pt-upgrade has no throttling options because the tool should only be ran
-on dedicated testing or development servers.  B<Do not run pt-upgrade
-on production servers!>  Consequently, the tool is CPU, memory, disk, and
+on dedicated testing or development servers.  B<Do not run> pt-upgrade
+B<on production servers!>  Consequently, the tool is CPU, memory, disk, and
 network intensive.  It executes queries as fast as possible.
 
 =head1 QUERY DIFFERENCES
@@ -11418,7 +11418,7 @@ lead to weird situations, like the server allowing LOCAL INFILE, but
 the client throwing exceptions if it's used.
 
 However, as long as the server allows LOAD DATA, clients can easily
-re-enable it; See L<https://dev.mysql.com/doc/refman/5.0/en/load-data-local.html>
+re-enable it; See L<https://dev.mysql.com/doc/refman/en/load-data-local-security.html>
 and L<http://search.cpan.org/~capttofu/DBD-mysql/lib/DBD/mysql.pm>.
 This option does exactly that.
 
@@ -11450,6 +11450,12 @@ Socket file to use for connection.
 dsn: user; copy: yes
 
 User for login if not current user.
+
+=item * s
+
+dsn: mysql_ssl; copy: yes
+
+Create SSL connection
 
 =back
 

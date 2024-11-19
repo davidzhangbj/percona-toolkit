@@ -25,6 +25,7 @@ use Quoter;
 use ReportFormatter;
 use OptionParser;
 use DSNParser;
+use VersionParser;
 use ReportFormatter;
 use ExplainAnalyzer;
 use Sandbox;
@@ -32,7 +33,7 @@ use PerconaTest;
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master', {no_lc=>1});  # for explain sparkline
+my $dbh = $sb->get_dbh_for('source', {no_lc=>1});  # for explain sparkline
 
 my ($result, $events, $expected);
 
@@ -1186,7 +1187,7 @@ ok(
 # #############################################################################
 SKIP: {
    skip 'Cannot connect to sandbox master', 3 unless $dbh;
-   $sb->load_file('master', "t/lib/samples/QueryReportFormatter/table.sql");
+   $sb->load_file('source', "t/lib/samples/QueryReportFormatter/table.sql");
 
    @ARGV = qw(--explain F=/tmp/12345/my.sandbox.cnf);
    $o->get_opts();

@@ -39,8 +39,8 @@ use Scalar::Util qw(blessed);
 use constant {
    PTDEBUG => $ENV{PTDEBUG} || 0,
    # Hostnames make testing less accurate.  Tests need to see
-   # that such-and-such happened on specific slave hosts, but
-   # the sandbox servers are all on one host so all slaves have
+   # that such-and-such happened on specific replica hosts, but
+   # the sandbox servers are all on one host so all replicas have
    # the same hostname.
    PERCONA_TOOLKIT_TEST_USE_DSN_NAMES => $ENV{PERCONA_TOOLKIT_TEST_USE_DSN_NAMES} || 0,
 };
@@ -171,7 +171,7 @@ sub set_dbh {
    # dbh.  dbh_set is required so that if this obj was created with
    # a dbh, we set that dbh when connect() is called because whoever
    # created the dbh probably didn't set what we set here.  For example,
-   # MasterSlave makes dbhs when finding slaves, but it doesn't set
+   # MasterSlave makes dbhs when finding replicas, but it doesn't set
    # anything.
    # Due to https://github.com/perl5-dbi/DBD-mysql/issues/306 we assigning
    # connection_id to $self->{dbh_set} and compare it with current connection_id.
@@ -297,12 +297,12 @@ sub is_cluster_node {
 }
 
 # There's two reasons why there might be dupes:
-# If the "master" is a cluster node, then a DSN table might have been
+# If the "source" is a cluster node, then a DSN table might have been
 # used, and it may have all nodes' DSNs so the user can run the tool
-# on any node, in which case it has the "master" node, the DSN given
+# on any node, in which case it has the "source" node, the DSN given
 # on the command line.
 # On the other hand, maybe find_cluster_nodes worked, in which case
-# we definitely have a dupe for the master cxn, but we may also have a
+# we definitely have a dupe for the source cxn, but we may also have a
 # dupe for every other node if this was used in conjunction with a
 # DSN table.
 # So try to detect and remove those.

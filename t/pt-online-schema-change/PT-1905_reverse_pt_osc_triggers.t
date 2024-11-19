@@ -28,20 +28,20 @@ require "$trunk/bin/pt-online-schema-change";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $master_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
+my $source_dbh = $sb->get_dbh_for('source');
+my $source_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
-$sb->load_file('master', "t/pt-online-schema-change/samples/pt-153.sql");
+$sb->load_file('source', "t/pt-online-schema-change/samples/pt-153.sql");
 
 sub start_thread {
    my ($dsn_opts) = @_;
    my $dp = new DSNParser(opts=>$dsn_opts);
    my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-   my $dbh = $sb->get_dbh_for('master');
+   my $dbh = $sb->get_dbh_for('source');
    PTDEBUG && diag("Thread started...");
 
    local $SIG{KILL} = sub { 
@@ -69,7 +69,7 @@ my $exit_status;
 sleep(1); # Let is generate some rows. 
 
 ($output, $exit_status) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=t1",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=t1",
          '--execute', 
          '--alter', "DROP COLUMN f3", 
          '--reverse-triggers', '--no-drop-old-table',
@@ -81,7 +81,7 @@ is(
       $exit_status,
       0,
       "Exit status is 0",
-);
+) or diag($output);
 
 like(
       $output,
@@ -94,7 +94,7 @@ my $triggers_sql = "SELECT TRIGGER_SCHEMA, TRIGGER_NAME, DEFINER, EVENT_OBJECT_S
                  . "  FROM INFORMATION_SCHEMA.TRIGGERS "
                  . " WHERE TRIGGER_SCHEMA = 'test' ORDER BY TRIGGER_NAME";
 
-my $rows = $master_dbh->selectall_arrayref($triggers_sql, {Slice =>{}});
+my $rows = $source_dbh->selectall_arrayref($triggers_sql, {Slice =>{}});
 
 is_deeply (
     want_triggers(), 
@@ -106,8 +106,8 @@ is_deeply (
 $thr->kill('KILL'); 
 $thr->join();
 
-my $new_count = $master_dbh->selectrow_hashref('SELECT COUNT(*) AS cnt FROM test.t1');
-my $old_count = $master_dbh->selectrow_hashref('SELECT COUNT(*) AS cnt FROM test._t1_old');
+my $new_count = $source_dbh->selectrow_hashref('SELECT COUNT(*) AS cnt FROM test.t1');
+my $old_count = $source_dbh->selectrow_hashref('SELECT COUNT(*) AS cnt FROM test._t1_old');
 
 is (
     $old_count->{cnt},
@@ -115,12 +115,12 @@ is (
     "Rows count is correct",
 );
 
-$master_dbh->do("DROP DATABASE IF EXISTS test");
+$source_dbh->do("DROP DATABASE IF EXISTS test");
 
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;
 

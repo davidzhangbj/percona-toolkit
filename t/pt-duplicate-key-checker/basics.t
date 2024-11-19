@@ -15,12 +15,13 @@ use PerconaTest;
 use Sandbox;
 require "$trunk/bin/pt-duplicate-key-checker";
 
+require VersionParser;
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 my $output;
@@ -59,7 +60,7 @@ if ($sandbox_version ge '8.0') {
 
 is(`$cmd -d test --nosummary`, '', 'No dupes on clean sandbox');
 
-$sb->load_file('master', 't/lib/samples/dupe_key.sql', 'test');
+$sb->load_file('source', 't/lib/samples/dupe_key.sql', 'test');
 
 ok(
    no_diff(
@@ -88,7 +89,7 @@ ok(
    '--nosummary'
 );
 
-$sb->load_file('master', 't/lib/samples/uppercase_names.sql', 'test');
+$sb->load_file('source', 't/lib/samples/uppercase_names.sql', 'test');
 
 ok(
    no_diff(
@@ -100,7 +101,7 @@ ok(
    'Issue 306 crash on uppercase column names'
 );
 
-$sb->load_file('master', 't/lib/samples/issue_269-1.sql', 'test');
+$sb->load_file('source', 't/lib/samples/issue_269-1.sql', 'test');
 
 ok(
    no_diff(
@@ -119,7 +120,7 @@ ok(
 );
 
 $dbh->do('create database test');
-$sb->load_file('master', 't/lib/samples/dupekeys/dupe-cluster-bug-894140.sql', 'test');
+$sb->load_file('source', 't/lib/samples/dupekeys/dupe-cluster-bug-894140.sql', 'test');
 
 ok(
    no_diff(
@@ -165,7 +166,7 @@ ok(
 # https://bugs.launchpad.net/percona-toolkit/+bug/1217013
 # #############################################################################
 
-$sb->load_file('master', 't/lib/samples/dupekeys/simple_dupe_bug_1217013.sql', 'test');
+$sb->load_file('source', 't/lib/samples/dupekeys/simple_dupe_bug_1217013.sql', 'test');
 
 my $want = $sandbox_version lt '8.0' ? "$sample/simple_dupe_bug_1217013.txt" : "$sample/simple_dupe_bug_1217013_80.txt";
 ok(

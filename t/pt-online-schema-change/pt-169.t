@@ -24,14 +24,14 @@ require "$trunk/bin/pt-online-schema-change";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $master_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
+my $source_dbh = $sb->get_dbh_for('source');
+my $source_dsn = 'h=127.1,P=12345,u=msandbox,p=msandbox';
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
-my $vp = VersionParser->new($master_dbh);
+my $vp = VersionParser->new($source_dbh);
 
 if ($vp->cmp('8.0') > -1 && $vp->cmp('8.0.14') < 0 && $vp->flavor() !~ m/maria/i) {
     plan skip_all => 'Drop swap does not work with MySQL 8.0 - 8.0.13';
@@ -48,10 +48,10 @@ my $exit_status;
 my $sample  = "t/pt-online-schema-change/samples/";
 my $ERROR_UPDATING_FKS = 15; # from pt-online-schema-change line 8453
 
-$sb->load_file('master', "$sample/pt-169.sql");
+$sb->load_file('source', "$sample/pt-169.sql");
 
 ($output, $exit_status) = full_output(
-   sub { pt_online_schema_change::main(@args, "$master_dsn,D=test,t=users",
+   sub { pt_online_schema_change::main(@args, "$source_dsn,D=test,t=users",
          '--execute', '--alter', 'CHANGE COLUMN id id BIGINT UNSIGNED NOT NULL FIRST', 
          '--set-vars', 'foreign_key_checks=0',
          '--alter-foreign-keys-method', 'drop_swap',  '--no-check-alter')
@@ -68,18 +68,18 @@ is(
 # 2
 # Since drop_swap has failed, the clueanup process should be skipped and the new table
 # shouldn't be deleted
-my $row = $master_dbh->selectrow_hashref("select count(*) AS how_many from test._users_new");
+my $row = $source_dbh->selectrow_hashref("select count(*) AS how_many from test._users_new");
 is (
     $row->{how_many},
     1,
     "Correct number of rows",
 ) or diag($row);
 
-$master_dbh->do("DROP DATABASE IF EXISTS test");
+$source_dbh->do("DROP DATABASE IF EXISTS test");
 
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 done_testing;

@@ -17,10 +17,10 @@ require "$trunk/bin/pt-archiver";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 else {
    plan tests => 23;
@@ -31,7 +31,7 @@ my $output;
 # #############################################################################
 # PT-2114: Incorrect casting of BIT columns by pt-archiver 
 # #############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/pt-2114.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2114.sql');
 
 my $zero_rows = $dbh->selectall_arrayref('select id, hex(val) from pt_2114.t1 where val = 0');
 my $exit_status;
@@ -69,7 +69,7 @@ is (
 # #############################################################################
 # Reloading dump to perform archiving
 # #############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/pt-2114.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2114.sql');
 
 my $one_rows = $dbh->selectall_arrayref('select id, hex(val) from pt_2114.t1 where val = 1');
 
@@ -115,7 +115,7 @@ is_deeply(
 # #############################################################################
 # Reloading dump to perform archiving
 # #############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/pt-2114.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2114.sql');
 
 $output = output(
    sub { $exit_status = pt_archiver::main(
@@ -159,7 +159,7 @@ is_deeply(
 # #############################################################################
 # Reloading dump to perform archiving
 # #############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/pt-2114.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2114.sql');
 
 $output = output(
    sub { $exit_status = pt_archiver::main(
@@ -194,7 +194,7 @@ is (
 # #############################################################################
 # Reloading dump to perform archiving
 # #############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/pt-2114.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2114.sql');
 
 # Archiving into a file
 $output = output(
@@ -244,7 +244,7 @@ is (
 # Longer BIT values
 # Loading dump to perform archiving
 # #############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/pt-2114-2.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2114-2.sql');
 my $not_archived_rows = $dbh->selectall_arrayref("select id, hex(val) from pt_2114.t1 where val = b'1111000010'");
 
 $output = output(

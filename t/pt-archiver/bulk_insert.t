@@ -19,10 +19,10 @@ require "$trunk/bin/pt-archiver";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 my $output;
@@ -34,7 +34,7 @@ $sb->wipe_clean($dbh);
 $sb->create_dbs($dbh, ['test']);
 
 # Test --bulk-insert
-$sb->load_file('master', 't/pt-archiver/samples/table5.sql');
+$sb->load_file('source', 't/pt-archiver/samples/table5.sql');
 $dbh->do('INSERT INTO `test`.`table_5_copy` SELECT * FROM `test`.`table_5`');
 
 $output = output(
@@ -60,7 +60,7 @@ like($output, qr/copy\s+$chks/, 'copy checksum');
 # ############################################################################
 # Issue 1260: mk-archiver --bulk-insert data loss
 # ############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/bulk_regular_insert.sql');
+$sb->load_file('source', 't/pt-archiver/samples/bulk_regular_insert.sql');
 my $orig_rows   = $dbh->selectall_arrayref('select id from bri.t order by id');
 my $lt_8 = [ grep { $_->[0] < 8 } @$orig_rows ];
 my $ge_8 = [ grep { $_->[0] >= 8 } @$orig_rows ];
@@ -97,9 +97,9 @@ if( Test::Builder->VERSION < 2 ) {
 }
 # >"
 for my $char ( "\N{KATAKANA LETTER NI}", "\N{U+DF}" ) {
-   my $utf8_dbh = $sb->get_dbh_for('master', { mysql_enable_utf8 => 1, AutoCommit => 1 });
+   my $utf8_dbh = $sb->get_dbh_for('source', { mysql_enable_utf8 => 1, AutoCommit => 1 });
 
-   $sb->load_file('master', 't/pt-archiver/samples/bug_1127450.sql');
+   $sb->load_file('source', 't/pt-archiver/samples/bug_1127450.sql');
    my $sql = qq{INSERT INTO `bug_1127450`.`original` VALUES (1, ?)};
    $utf8_dbh->prepare($sql)->execute($char);
 
@@ -144,7 +144,7 @@ for my $char ( "\N{KATAKANA LETTER NI}", "\N{U+DF}" ) {
 # PT-2123: pt-archiver gives error "Wide character in print at 
 # /usr/bin/pt-archiver line 6815" when using --bulk-insert 
 # #############################################################################
-$sb->load_file('master', 't/pt-archiver/samples/pt-2123.sql');
+$sb->load_file('source', 't/pt-archiver/samples/pt-2123.sql');
 
 $dbh->do('set names "utf8mb4"');
 my $original_rows = $dbh->selectall_arrayref('select col2 from pt_2123.t1 where col1=5');

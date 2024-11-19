@@ -14,17 +14,18 @@ use Test::More tests => 6;
 use PerconaTest;
 use Sandbox;
 require "$trunk/bin/pt-kill";
+require VersionParser;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
+my $source_dbh = $sb->get_dbh_for('source');
 
 my $output;
 my $cnf='/tmp/12345/my.sandbox.cnf';
 my $cmd = "$trunk/bin/pt-kill -F $cnf -h 127.1";
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 `$cmd --print --interval 1s --run-time 20 --pid /tmp/pt-kill.pid --log /tmp/pt-kill.log --daemonize --busy-time 5  --kill-query --victims all --charset utf8mb4`;
@@ -40,7 +41,7 @@ ok(
    'Log file created'
 );
 
-$master_dbh->do("select '柏木', sleep(20);");
+$source_dbh->do("select '柏木', sleep(20);");
 
 wait_until(sub { return !-f '/tmp/pt-kill.pid' });
 ok(
@@ -67,6 +68,6 @@ diag(`rm -rf /tmp/pt-kill.log 2>/dev/null`);
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh) if $master_dbh;
+$sb->wipe_clean($source_dbh) if $source_dbh;
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 exit;

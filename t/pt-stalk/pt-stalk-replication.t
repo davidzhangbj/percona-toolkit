@@ -15,14 +15,15 @@ use Time::HiRes qw(sleep);
 
 use PerconaTest;
 use DSNParser;
+require VersionParser;
 use Sandbox;
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 
 my $cnf      = "/tmp/12345/my.sandbox.cnf";
@@ -54,16 +55,16 @@ sub wait_n_cycles {
 }
 
 # ###########################################################################
-# Test that SHOW SLAVE STATUS outputs are captured
+# Test that SHOW REPLICA STATUS outputs are captured
 # ###########################################################################
 
 my $retval = system("$trunk/bin/pt-stalk --no-stalk --run-time 1 --dest $dest --prefix nostalk --pid $pid_file --iterations 1 -- --defaults-file=$cnf --socket=/tmp/12346/mysql_sandbox12346.sock >$log_file 2>&1");
-my $output = `cat $dest/nostalk-slave-status|grep Slave_IO_Running`;
+my $output = `cat $dest/nostalk-${replica_name}-status|grep -i ${replica_name}_IO_Running`;
 
 like(
    $output,
-   qr/Slave_IO_Running: Yes/,
-   "SHOW SLAVE STATUS outputs gathered."
+   qr/${replica_name}_IO_Running: Yes/i,
+   "SHOW REPLICA STATUS outputs gathered."
 );
 
 is(

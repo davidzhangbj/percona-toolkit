@@ -182,6 +182,10 @@ for pkg in $pkgs; do
 done
 
 if [ $pkgs_updated -gt 0 ]; then
+   # Storing existing EXIT_STATUS, because tool should only fail copying resulting
+   # file if below code also fails. Previous errors should not affect copying.
+   es=$EXIT_STATUS
+   EXIT_STATUS=0
    if [ "$tool_lang" = "perl" ]; then
       update_tool_header $tmp_tool_file
       if [ $? -ne 0 ]; then
@@ -190,7 +194,7 @@ if [ $pkgs_updated -gt 0 ]; then
    fi
    if [ $EXIT_STATUS -eq 0 ]; then
       cp $tmp_tool_file $tool_file
-      EXIT_STATUS=$((EXIT_STATUS | $?))
+      EXIT_STATUS=$((es | $?))
       if [ $? -ne 0 ]; then
          warn "Failed to copy $tmp_tool_file to $tool_file"
       fi

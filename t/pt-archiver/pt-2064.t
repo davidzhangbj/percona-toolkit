@@ -19,31 +19,31 @@ require "$trunk/bin/pt-archiver";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave1_dbh = $sb->get_dbh_for('slave1');
+my $source_dbh = $sb->get_dbh_for('source');
+my $replica1_dbh = $sb->get_dbh_for('replica1');
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
-elsif ( !$slave1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave1';
+elsif ( !$replica1_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica1';
 }
 
 my $cnf  = "/tmp/12345/my.sandbox.cnf";
 my $cmd  = "$trunk/bin/pt-archiver";
 my @args = qw(--where 1=1);
 
-$sb->create_dbs($master_dbh, ['test']);
-$sb->load_file('master', 't/pt-archiver/samples/table1.sql');
-$sb->wait_for_slaves();
+$sb->create_dbs($source_dbh, ['test']);
+$sb->load_file('source', 't/pt-archiver/samples/table1.sql');
+$sb->wait_for_replicas();
 
 my $old_innodb_lock_wait_timeout = `/tmp/12345/use -ss -e 'select \@\@global.innodb_lock_wait_timeout'`;
 chomp $old_innodb_lock_wait_timeout;
 
-$master_dbh->do('set global innodb_lock_wait_timeout=1');
+$source_dbh->do('set global innodb_lock_wait_timeout=1');
 
-$master_dbh->do('begin');
-$master_dbh->do('select * from test.table_1 for update;');
+$source_dbh->do('begin');
+$source_dbh->do('select * from test.table_1 for update;');
 
 my ($output, $exit_val) = full_output(sub {pt_archiver::main(@args, '--source', "D=test,t=table_1,F=$cnf", qw(--purge)) });
 
@@ -62,9 +62,9 @@ unlike(
 # #############################################################################
 # Done.
 # #############################################################################
-$master_dbh->do("set global innodb_lock_wait_timeout=$old_innodb_lock_wait_timeout");
+$source_dbh->do("set global innodb_lock_wait_timeout=$old_innodb_lock_wait_timeout");
 
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 
 done_testing;

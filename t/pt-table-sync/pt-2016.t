@@ -22,18 +22,18 @@ require "$trunk/bin/pt-table-sync";
 
 my $dp = new DSNParser(opts=>$dsn_opts);
 my $sb = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave1_dbh = $sb->get_dbh_for('slave1'); 
-my $slave2_dbh = $sb->get_dbh_for('slave2'); 
+my $source_dbh = $sb->get_dbh_for('source');
+my $replica1_dbh = $sb->get_dbh_for('replica1'); 
+my $replica2_dbh = $sb->get_dbh_for('replica2'); 
 
-if ( !$master_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+if ( !$source_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox source';
 }
-elsif ( !$slave1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave1';
+elsif ( !$replica1_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica1';
 }
-elsif ( !$slave1_dbh ) {
-   plan skip_all => 'Cannot connect to sandbox slave2';
+elsif ( !$replica1_dbh ) {
+   plan skip_all => 'Cannot connect to sandbox replica2';
 }
 else {
    plan tests => 3;
@@ -41,16 +41,16 @@ else {
 
 
 my ($output, $status);
-my @args = ('h=127.0.0.1,P=12346,u=msandbox,p=msandbox,D=test,t=test2', '--sync-to-master', 
+my @args = ('h=127.0.0.1,P=12346,u=msandbox,p=msandbox,D=test,t=test2', '--sync-to-source', 
     '--chunk-size=1', '--hex-blob', '--execute');
 
 # use lib/samples dir since the main change is in DSNParser
-$sb->load_file('master', "t/pt-table-sync/samples/pt-2016.sql");
+$sb->load_file('source', "t/pt-table-sync/samples/pt-2016.sql");
 
-$sb->wait_for_slaves();
+$sb->wait_for_replicas();
 
-$slave1_dbh->do("UPDATE test.test2 SET col3='bbb'");
-$slave1_dbh->do("FLUSH TABLES");
+$replica1_dbh->do("UPDATE test.test2 SET col3='bbb'");
+$replica1_dbh->do("FLUSH TABLES");
 
 # 1
 ($output, $status) = full_output(
@@ -69,16 +69,16 @@ my $want = {
   col2 => 'aaa',
   col3 => 'aaa'
 };
-my $row = $slave1_dbh->selectrow_hashref("SELECT col1, col2, col3 FROM test.test2");
+my $row = $replica1_dbh->selectrow_hashref("SELECT col1, col2, col3 FROM test.test2");
 is_deeply(
     $row,
     $want,
-    "PT-2016 table-sync CRC32 in key - Master was updated",
+    "PT-2016 table-sync CRC32 in key - Source was updated",
 ) or diag("Want '".($want||"")."', got '".($row->{col3}||"")."'");
 
 # #############################################################################
 # Done.
 # #############################################################################
-$sb->wipe_clean($master_dbh);
+$sb->wipe_clean($source_dbh);
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 exit;

@@ -15,12 +15,13 @@ use PerconaTest;
 use Sandbox;
 require "$trunk/bin/pt-duplicate-key-checker";
 
+require VersionParser;
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
 if ( !$dbh ) {
-   plan skip_all => 'Cannot connect to sandbox master';
+   plan skip_all => 'Cannot connect to sandbox source';
 }
 else {
    plan tests => 2;
@@ -47,7 +48,7 @@ if ($sandbox_version ge '8.0') {
 # #############################################################################
 # Issue 1192: DROP/ADD leaves structure unchanged
 # #############################################################################
-$sb->load_file('master', "t/lib/samples/dupekeys/issue-1192.sql", "issue_1192");
+$sb->load_file('source', "t/lib/samples/dupekeys/issue-1192.sql", "issue_1192");
 
 ok(
    no_diff(

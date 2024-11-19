@@ -1356,7 +1356,6 @@ Architecture | CPU = 32-bit, OS = 32-bit
  0 0 0   58164  339792     0   0   0   0     0   0   0   0  230  107  229  0  3 97
  0 0 0   58164  339792     0   0   0   0     0   0   0   0  231  115  229  0  5 95
 # Memory management ##########################################
-Transparent huge pages are enabled.
 # The End ####################################################
 EOF
 report_system_summary "$samples/BSD/freebsd_001" | tail -n +3 > "$PT_TMPDIR/got"
@@ -1412,7 +1411,6 @@ Architecture | CPU = 32-bit, OS = 32-bit
  0 0 0  78564  21364    0   0   0    0    0    0  0  0  101   11   9  0 0 100
  0 0 0  78564  21364    0   0   0    0    0    0  0  0  101   11  10  0 0 100
 # Memory management ##########################################
-Transparent huge pages are enabled.
 # The End ####################################################
 EOF
 report_system_summary "$samples/BSD/netbsd_001" | tail -n +3 > "$PT_TMPDIR/got"
@@ -1466,7 +1464,6 @@ Architecture | CPU = 32-bit, OS = 32-bit
  0 0 0   7496  191456 1272   0   0   0   0   0   0   0  256  1973   50  2 12 85
  0 0 0   7496  191456   11   0   0   0   0   0   0   0  230    23   12  0  0 100
 # Memory management ##########################################
-Transparent huge pages are enabled.
 # The End ####################################################
 EOF
 report_system_summary "$samples/BSD/openbsd_001" | tail -n +3  > "$PT_TMPDIR/got"
@@ -1591,7 +1588,6 @@ Unable to collect information
    1  0     0    0     0   150    225    225   1   1  95   3    
    0  0     0    0     0   150    250    250   1   0  99   0    
 # Memory management ##########################################
-Transparent huge pages are enabled.
 # The End ####################################################
 EOF
 

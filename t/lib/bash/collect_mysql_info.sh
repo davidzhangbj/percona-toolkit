@@ -163,11 +163,18 @@ cmd_ok \
 # collect_master_logs_status
 
 if [ -n "$(get_var log_bin "$p/mysql-variables")" ]; then
+   mysql_version="$(get_var version "$p/mysql-variables")"
+   source_logs_file="mysql-binary-logs"
+   source_status_file="mysql-binary-log-status"
+   if [ "$mysql_version" '<' "8.1" ]; then
+      source_logs_file='mysql-master-logs'
+      source_status_file='mysql-master-status'
+   fi
    cmd_ok \
-      "test -e $p/mysql-master-logs" \
+      "test -e $p/$source_logs_file" \
       "If we have a binlog, a file with the master logs should exist"
    cmd_ok \
-      "test -e $p/mysql-master-status" \
+      "test -e $p/$source_status_file" \
       "And likewise for master status"
 else
    skip 1 2 "no binlog"

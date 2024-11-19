@@ -14,13 +14,14 @@ use Test::More;
 use ChangeHandler;
 use Quoter;
 use DSNParser;
+use VersionParser;
 use Sandbox;
 use PerconaTest;
 
 my $dp  = new DSNParser(opts => $dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $master_dbh = $sb->get_dbh_for('master');
-my $slave1_dbh = $sb->get_dbh_for('slave1');
+my $master_dbh = $sb->get_dbh_for('source');
+my $slave1_dbh = $sb->get_dbh_for('replica1');
 
 throws_ok(
    sub { new ChangeHandler() },
@@ -439,7 +440,7 @@ is(
 
 SKIP: {
    skip 'Cannot connect to sandbox master', 1 unless $master_dbh;
-   $sb->load_file('master', "t/lib/samples/issue_641.sql");
+   $sb->load_file('source', "t/lib/samples/issue_641.sql");
 
    @rows = ();
    $tbl_struct = {
@@ -503,7 +504,7 @@ is_deeply(
 # #############################################################################
 SKIP: {
    skip 'Cannot connect to sandbox master', 1 unless $master_dbh;
-   $sb->load_file('master', "t/lib/samples/bug_1038276.sql");
+   $sb->load_file('source', "t/lib/samples/bug_1038276.sql");
 
    @rows = ();
    $tbl_struct = {
@@ -542,7 +543,7 @@ SKIP: {
 # #############################################################################
 $sb->wipe_clean($master_dbh);
 $sb->wipe_clean($slave1_dbh);
+$sb->ok();
 ok($sb->ok(), "Sandbox servers") or BAIL_OUT(__FILE__ . " broke the sandbox");
 
-done_testing;
-   
+done_testing; 

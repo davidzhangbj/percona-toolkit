@@ -17,9 +17,9 @@ require "$trunk/bin/pt-deadlock-logger";
 
 my $dp  = new DSNParser(opts=>$dsn_opts);
 my $sb  = new Sandbox(basedir => '/tmp', DSNParser => $dp);
-my $dbh = $sb->get_dbh_for('master');
+my $dbh = $sb->get_dbh_for('source');
 
-my ($output, $exist_status) = full_output(
+my ($output, $exit_status) = full_output(
    sub {
       pt_deadlock_logger::main(
          "h=127.1,D=non_existent_db,u=msandbox,p=msandbox",
@@ -29,6 +29,17 @@ my ($output, $exist_status) = full_output(
    }
 );
 
+is(
+   $exit_status,
+   2,
+   'Dies when connects to non existent database'
+);
+
+like(
+   $output,
+   qr/Unknown database 'non_existent_db'/,
+   'Error printed when connects to non existent database'
+);
 # #############################################################################
 # Done.
 # #############################################################################

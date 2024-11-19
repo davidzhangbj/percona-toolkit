@@ -154,7 +154,10 @@ sub get_duplicate_keys {
    if ( $clustered_key
         && $args{clustered}
         && $args{tbl_info}->{engine}
-        && $args{tbl_info}->{engine} =~ m/InnoDB/i )
+        && ( $args{tbl_info}->{engine} =~ m/InnoDB/i
+           || $args{tbl_info}->{engine} =~ m/TokuDB/i
+           || $args{tbl_info}->{engine} =~ m/RocksDB/i )
+        )
    {
       PTDEBUG && _d('Removing UNIQUE dupes of clustered key');
       push @dupes,
