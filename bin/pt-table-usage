@@ -3952,7 +3952,7 @@ my $unquoted_ident = qr/
 my $ident_alias = qr/
   \s+                                 # space before alias
   (?:(AS)\s+)?                        # optional AS keyword
-  ((?>$quoted_ident|$unquoted_ident)) # alais
+  ((?>$quoted_ident|$unquoted_ident)) # alias
 /xi;
 
 my $table_ident = qr/(?:
@@ -8622,6 +8622,6 @@ Place, Suite 330, Boston, MA  02111-1307  USA.
 
 =head1 VERSION
 
-pt-table-usage 3.6.0
+pt-table-usage 3.7.0
 
 =cut
