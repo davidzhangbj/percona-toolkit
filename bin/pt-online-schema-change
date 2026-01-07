@@ -4030,7 +4030,13 @@ sub set_dbh {
 
    my $sql = 'SELECT @@server_id /*!50038 , @@hostname*/, CONNECTION_ID() as connection_id';
    PTDEBUG && _d($dbh, $sql);
-   my ($server_id, $hostname, $connection_id) = $dbh->selectrow_array($sql);
+   # my ($server_id, $hostname, $connection_id) = $dbh->selectrow_array($sql);
+   # Since the server_id of OB is obtained from the binlog service, and CONNECTION_ID() 
+   # is executed in the observer, ODP cannot obtain these two variables simultaneously 
+   # in a single SQL statement. Therefore, it is necessary to obtain these variables separately
+   my $server_id = $dbh->selectrow_array('SELECT @@server_id');
+   my $hostname = $dbh->selectrow_array('SELECT @@hostname');
+   my $connection_id = $dbh->selectrow_array('SELECT CONNECTION_ID() as connection_id');
    PTDEBUG && _d($dbh, 'hostname:', $hostname, $server_id);
 
    if ( $self->{dbh} && $self->{dbh} == $dbh && $self->{dbh_set} && $self->{dbh_set} == $connection_id) {
