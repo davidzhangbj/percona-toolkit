@@ -9443,10 +9443,20 @@ sub main {
          };
       }
 
+      # Disable --max-load and --critical-load for OceanBase MySQL
+      my $max_load_spec = $o->get('max-load');
+      my $critical_load_spec = $o->get('critical-load');
+      
+      if ( $server_version->flavor() =~ m/OceanBase/i ) {
+         PTDEBUG && _d('OceanBase detected, disabling --max-load and --critical-load');
+         $max_load_spec = [];
+         $critical_load_spec = [];
+      }
+
       eval {
          $sys_load = new MySQLStatusWaiter(
-            max_spec      => $o->get('max-load'),
-            critical_spec => $o->get('critical-load'),
+            max_spec      => $max_load_spec,
+            critical_spec => $critical_load_spec,
             get_status    => $get_status,
             oktorun       => sub { return $oktorun },
             sleep         => $sleep,
