@@ -5728,6 +5728,8 @@ use warnings FATAL => 'all';
 use English qw(-no_match_vars);
 use constant PTDEBUG => $ENV{PTDEBUG} || 0;
 
+our $IS_OCEANBASE = 0;
+
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
@@ -5845,8 +5847,10 @@ sub _one_nibble {
          . " /*$comments->{bite}*/";
       PTDEBUG && _d('One nibble statement:', $nibble_sql);
 
+      my $explain_prefix = $NibbleIterator::IS_OCEANBASE
+         ? "EXPLAIN FORMAT=JSON SELECT " : "EXPLAIN SELECT ";
       my $explain_nibble_sql
-         = "EXPLAIN SELECT "
+         = $explain_prefix
          . ($args->{select} ? $args->{select}
                           : join(', ', map{ $tbl->{tbl_struct}->{type_for}->{$_} eq 'enum'
                           ? "CAST(".$q->quote($_)." AS UNSIGNED)" : $q->quote($_) } @$cols))
@@ -5943,8 +5947,10 @@ sub _nibble_params {
          . " /*$comments->{nibble}*/";
       PTDEBUG && _d('Nibble statement:', $nibble_sql);
 
+      my $explain_prefix = $NibbleIterator::IS_OCEANBASE
+         ? "EXPLAIN FORMAT=JSON SELECT " : "EXPLAIN SELECT ";
       my $explain_nibble_sql
-         = "EXPLAIN SELECT "
+         = $explain_prefix
          . ($args->{select} ? $args->{select}
                           : join(', ', map { $q->quote($_) } @{$asc->{cols}}))
          . " FROM $from"
@@ -5967,8 +5973,10 @@ sub _nibble_params {
          last_ub_sql          => $last_ub_sql,
          ub_sql               => $ub_sql,
          nibble_sql           => $nibble_sql,
-         explain_first_lb_sql => "EXPLAIN $first_lb_sql",
-         explain_ub_sql       => "EXPLAIN $ub_sql",
+         explain_first_lb_sql => ($NibbleIterator::IS_OCEANBASE
+            ? "EXPLAIN FORMAT=JSON $first_lb_sql" : "EXPLAIN $first_lb_sql"),
+         explain_ub_sql       => ($NibbleIterator::IS_OCEANBASE
+            ? "EXPLAIN FORMAT=JSON $ub_sql" : "EXPLAIN $ub_sql"),
          explain_nibble_sql   => $explain_nibble_sql,
          resume_lb_sql        => $resume_lb_sql,
          sql                  => {
@@ -6304,6 +6312,63 @@ sub _get_index_cardinality {
    return $cardinality;
 }
 
+sub _parse_oceanbase_explain {
+   my (%args) = @_;
+   my $dbh  = $args{dbh};
+   my $sql  = $args{sql};
+   my $sth  = $args{sth};
+   my $vals = $args{vals};
+   my $tbl  = $args{tbl};
+
+   my $json_text = '';
+   if ($sth) {
+      $sth->execute(@{$vals || []});
+      my $rows = $sth->fetchall_arrayref();
+      $sth->finish();
+      $json_text = join('', map { $_->[0] } @$rows);
+   }
+   else {
+      my $rows = $dbh->selectall_arrayref($sql);
+      $json_text = join('', map { $_->[0] } @$rows);
+   }
+
+   my $result = {
+      rows          => 0,
+      key           => undef,
+      key_len       => undef,
+      possible_keys => undef,
+   };
+
+   if ($json_text =~ /"EST\.ROWS"\s*:\s*(\d+)/) {
+      $result->{rows} = $1;
+   }
+
+   if ($json_text =~ /"NAME"\s*:\s*"([^"]+)"/) {
+      my $name = $1;
+      if ($name =~ /\(([^)]+)\)/) {
+         $result->{key} = $1;
+         $result->{possible_keys} = $1;
+      }
+      else {
+         $result->{key} = 'PRIMARY';
+         $result->{possible_keys} = 'PRIMARY';
+      }
+   }
+
+   if ( $result->{key} && $dbh && $tbl && $tbl->{tbl_struct} ) {
+      my $index_name = $result->{key};
+      if ( $tbl->{tbl_struct}->{keys}->{$index_name} ) {
+         my $n_cols = scalar @{$tbl->{tbl_struct}->{keys}->{$index_name}->{cols}};
+         $result->{key_len} = IndexLength::_calc_oceanbase_key_len(
+            $dbh, $tbl, $index_name, $n_cols);
+      }
+   }
+
+   PTDEBUG && _d('OceanBase EXPLAIN parsed: rows=', $result->{rows},
+                  ', key=', $result->{key}, ', key_len=', $result->{key_len});
+   return $result;
+}
+
 sub get_row_estimate {
    my (%args) = @_;
    my @required_args = qw(Cxn tbl);
@@ -6311,6 +6376,20 @@ sub get_row_estimate {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($cxn, $tbl) = @args{@required_args};
+
+
+   if ( $IS_OCEANBASE ) {
+      my $sql = "EXPLAIN FORMAT=JSON SELECT * FROM $tbl->{name} "
+            . "WHERE " . ($args{where} || '1=1');
+      PTDEBUG && _d($sql);
+      my $expl = _parse_oceanbase_explain(
+         dbh => $cxn->dbh(), sql => $sql, tbl => $tbl);
+      my $idx = $expl->{key} || '';
+      if ( $idx ne 'PRIMARY' ) {
+         $idx = lc($idx);
+      }
+      return ($expl->{rows} || 0), $idx;
+   }
 
    my $sql = "EXPLAIN SELECT * FROM $tbl->{name} "
            . "WHERE " . ($args{where} || '1=1');
@@ -6994,7 +7073,87 @@ sub index_length {
    my $row = $sth->fetchrow_hashref();
    $sth->finish();
    PTDEBUG && _d('Range scan:', Dumper($row));
+
+   if ( $NibbleIterator::IS_OCEANBASE ) {
+      my $key_len = _calc_oceanbase_key_len($cxn->dbh(), $args{tbl}, $args{index}, $n_index_cols);
+      PTDEBUG && _d('OceanBase key_len=', $key_len, ', key=', $args{index});
+      return $key_len, $args{index};
+   }
+
    return $row->{key_len}, $row->{key};
+}
+
+sub _calc_oceanbase_key_len {
+   my ($dbh, $tbl, $index, $n_index_cols) = @_;
+
+   my $index_struct = $tbl->{tbl_struct}->{keys}->{$index};
+   my $index_cols   = $index_struct->{cols};
+   if ( !$n_index_cols || $n_index_cols > scalar @$index_cols ) {
+      $n_index_cols = scalar @$index_cols;
+   }
+
+   my $db  = $tbl->{db};
+   my $tb  = $tbl->{tbl};
+   my $key_len = 0;
+
+   for my $i ( 0 .. ($n_index_cols - 1) ) {
+      my $col = $index_cols->[$i];
+      my $sql = "SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, "
+              . "CHARACTER_OCTET_LENGTH, IS_NULLABLE, "
+              . "NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION "
+              . "FROM information_schema.COLUMNS "
+              . "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?";
+      my $info = $dbh->selectrow_hashref($sql, undef, $db, $tb, $col);
+      next unless $info;
+      $info = { map { lc($_) => $info->{$_} } keys %$info };
+
+      my $dtype = lc($info->{data_type} || '');
+      my $len = 0;
+      if    ($dtype eq 'bigint')    { $len = 8; }
+      elsif ($dtype eq 'int')       { $len = 4; }
+      elsif ($dtype eq 'mediumint') { $len = 3; }
+      elsif ($dtype eq 'smallint')  { $len = 2; }
+      elsif ($dtype eq 'tinyint')   { $len = 1; }
+      elsif ($dtype eq 'float')     { $len = 4; }
+      elsif ($dtype eq 'double')    { $len = 8; }
+      elsif ($dtype eq 'decimal' || $dtype eq 'numeric') {
+         my ($p, $s) = ($info->{numeric_precision} || 10, $info->{numeric_scale} || 0);
+         use POSIX qw(ceil);
+         $len = ceil(($p - $s) / 9) * 4 + ceil($s / 9) * 4;
+      }
+      elsif ($dtype eq 'date')      { $len = 3; }
+      elsif ($dtype eq 'year')      { $len = 1; }
+      elsif ($dtype eq 'time' || $dtype eq 'datetime') {
+         my $fsp = $info->{datetime_precision} || 0;
+         my $fsp_bytes = $fsp <= 0 ? 0 : ($fsp <= 2 ? 1 : ($fsp <= 4 ? 2 : 3));
+         $len = ($dtype eq 'datetime' ? 5 : 3) + $fsp_bytes;
+      }
+      elsif ($dtype eq 'timestamp') {
+         my $fsp = $info->{datetime_precision} || 0;
+         my $fsp_bytes = $fsp <= 0 ? 0 : ($fsp <= 2 ? 1 : ($fsp <= 4 ? 2 : 3));
+         $len = 4 + $fsp_bytes;
+      }
+      elsif ($dtype eq 'bit') {
+         use POSIX qw(ceil);
+         $len = ceil(($info->{numeric_precision} || 1) / 8);
+      }
+      elsif ($dtype eq 'enum')      { $len = 2; }
+      elsif ($dtype eq 'set')       { $len = 8; }
+      elsif ($dtype =~ /char|binary/) {
+         $len = $info->{character_octet_length} || 0;
+         $len += 2 if $dtype =~ /^var/;
+      }
+      elsif ($dtype =~ /text|blob/) {
+         $len = $info->{character_octet_length} || 0;
+         $len += 2;
+      }
+      else { $len = 8; }
+
+      $len += 1 if ($info->{is_nullable} || '') eq 'YES';
+      $key_len += $len;
+   }
+
+   return $key_len || 8;
 }
 
 sub _get_first_values {
@@ -9111,6 +9270,11 @@ sub main {
    # http://bugs.mysql.com/bug.php?id=45694
    my $lock_in_share_mode = $server_version < '5.1' ? 0 : 1;
 
+   if ( $server_version->flavor() =~ m/OceanBase/i ) {
+      PTDEBUG && _d('OceanBase detected, setting IS_OCEANBASE flag');
+      $NibbleIterator::IS_OCEANBASE = 1;
+   }
+
    # ########################################################################
    # Check if analyze-before-swap is necessary.
    # https://bugs.launchpad.net/percona-toolkit/+bug/1491261
@@ -9447,7 +9611,7 @@ sub main {
       my $max_load_spec = $o->get('max-load');
       my $critical_load_spec = $o->get('critical-load');
       
-      if ( $server_version->flavor() =~ m/OceanBase/i ) {
+      if ( $NibbleIterator::IS_OCEANBASE ) {
          PTDEBUG && _d('OceanBase detected, disabling --max-load and --critical-load');
          $max_load_spec = [];
          $critical_load_spec = [];
@@ -12550,9 +12714,15 @@ sub explain_statement {
    my $expl;
    eval {
       PTDEBUG && _d($sth->{Statement}, 'params:', @$vals);
-      $sth->execute(@$vals);
-      $expl = $sth->fetchrow_hashref();
-      $sth->finish();
+      if ( $NibbleIterator::IS_OCEANBASE ) {
+         $expl = NibbleIterator::_parse_oceanbase_explain(
+            dbh => $sth->{Database}, sth => $sth, vals => $vals, tbl => $tbl);
+      }
+      else {
+         $sth->execute(@$vals);
+         $expl = $sth->fetchrow_hashref();
+         $sth->finish();
+      }
    };
    if ( $EVAL_ERROR ) {
       # This shouldn't happen.
@@ -14301,7 +14471,7 @@ software from Percona.
 
 =head1 COPYRIGHT, LICENSE, AND WARRANTY
 
-This program is copyright 2011-2024 Percona LLC and/or its affiliates.
+This program is copyright 2011-2026 Percona LLC and/or its affiliates.
 
 THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
 WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
@@ -14313,9 +14483,8 @@ Foundation, version 2; OR the Perl Artistic License.  On UNIX and similar
 systems, you can issue `man perlgpl' or `man perlartistic' to read these
 licenses.
 
-You should have received a copy of the GNU General Public License along with
-this program; if not, write to the Free Software Foundation, Inc., 59 Temple
-Place, Suite 330, Boston, MA  02111-1307  USA.
+You should have received a copy of the GNU General Public License, version 2
+along with this program; if not, see <https://www.gnu.org/licenses/>.
 
 =head1 VERSION
 
