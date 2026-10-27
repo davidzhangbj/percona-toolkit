@@ -87,7 +87,93 @@ sub index_length {
    my $row = $sth->fetchrow_hashref();
    $sth->finish();
    PTDEBUG && _d('Range scan:', Dumper($row));
+
+   # OceanBase does not report key_len/key in EXPLAIN, compute it from
+   # information_schema instead.  IS_OCEANBASE is set by the calling tool.
+   no warnings 'once';
+   if ( $NibbleIterator::IS_OCEANBASE ) {
+      my $key_len = _calc_oceanbase_key_len(
+         $cxn->dbh(), $args{tbl}, $args{index}, $n_index_cols);
+      PTDEBUG && _d('OceanBase key_len=', $key_len, ', key=', $args{index});
+      return $key_len, $args{index};
+   }
+
    return $row->{key_len}, $row->{key};
+}
+
+# Compute the index key length for OceanBase from information_schema,
+# the values reported by EXPLAIN cannot be used directly there.
+sub _calc_oceanbase_key_len {
+   my ($dbh, $tbl, $index, $n_index_cols) = @_;
+
+   my $index_struct = $tbl->{tbl_struct}->{keys}->{$index};
+   my $index_cols   = $index_struct->{cols};
+   if ( !$n_index_cols || $n_index_cols > scalar @$index_cols ) {
+      $n_index_cols = scalar @$index_cols;
+   }
+
+   my $db  = $tbl->{db};
+   my $tb  = $tbl->{tbl};
+   my $key_len = 0;
+
+   for my $i ( 0 .. ($n_index_cols - 1) ) {
+      my $col = $index_cols->[$i];
+      my $sql = "SELECT DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, "
+              . "CHARACTER_OCTET_LENGTH, IS_NULLABLE, "
+              . "NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION "
+              . "FROM information_schema.COLUMNS "
+              . "WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?";
+      my $info = $dbh->selectrow_hashref($sql, undef, $db, $tb, $col);
+      next unless $info;
+      $info = { map { lc($_) => $info->{$_} } keys %$info };
+
+      my $dtype = lc($info->{data_type} || '');
+      my $len = 0;
+      if    ($dtype eq 'bigint')    { $len = 8; }
+      elsif ($dtype eq 'int')       { $len = 4; }
+      elsif ($dtype eq 'mediumint') { $len = 3; }
+      elsif ($dtype eq 'smallint')  { $len = 2; }
+      elsif ($dtype eq 'tinyint')   { $len = 1; }
+      elsif ($dtype eq 'float')     { $len = 4; }
+      elsif ($dtype eq 'double')    { $len = 8; }
+      elsif ($dtype eq 'decimal' || $dtype eq 'numeric') {
+         my ($p, $s) = ($info->{numeric_precision} || 10, $info->{numeric_scale} || 0);
+         use POSIX qw(ceil);
+         $len = ceil(($p - $s) / 9) * 4 + ceil($s / 9) * 4;
+      }
+      elsif ($dtype eq 'date')      { $len = 3; }
+      elsif ($dtype eq 'year')      { $len = 1; }
+      elsif ($dtype eq 'time' || $dtype eq 'datetime') {
+         my $fsp = $info->{datetime_precision} || 0;
+         my $fsp_bytes = $fsp <= 0 ? 0 : ($fsp <= 2 ? 1 : ($fsp <= 4 ? 2 : 3));
+         $len = ($dtype eq 'datetime' ? 5 : 3) + $fsp_bytes;
+      }
+      elsif ($dtype eq 'timestamp') {
+         my $fsp = $info->{datetime_precision} || 0;
+         my $fsp_bytes = $fsp <= 0 ? 0 : ($fsp <= 2 ? 1 : ($fsp <= 4 ? 2 : 3));
+         $len = 4 + $fsp_bytes;
+      }
+      elsif ($dtype eq 'bit') {
+         use POSIX qw(ceil);
+         $len = ceil(($info->{numeric_precision} || 1) / 8);
+      }
+      elsif ($dtype eq 'enum')      { $len = 2; }
+      elsif ($dtype eq 'set')       { $len = 8; }
+      elsif ($dtype =~ /char|binary/) {
+         $len = $info->{character_octet_length} || 0;
+         $len += 2 if $dtype =~ /^var/;
+      }
+      elsif ($dtype =~ /text|blob/) {
+         $len = $info->{character_octet_length} || 0;
+         $len += 2;
+      }
+      else { $len = 8; }
+
+      $len += 1 if ($info->{is_nullable} || '') eq 'YES';
+      $key_len += $len;
+   }
+
+   return $key_len || 8;
 }
 
 sub _get_first_values {

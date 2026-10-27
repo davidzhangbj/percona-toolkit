@@ -27,6 +27,10 @@ use warnings FATAL => 'all';
 use English qw(-no_match_vars);
 use constant PTDEBUG => $ENV{PTDEBUG} || 0;
 
+# Set to 1 by the calling tool when the server is OceanBase; used to work
+# around differences in EXPLAIN output and index key length reporting.
+our $IS_OCEANBASE = 0;
+
 use Data::Dumper;
 $Data::Dumper::Indent    = 1;
 $Data::Dumper::Sortkeys  = 1;
@@ -173,8 +177,13 @@ sub _one_nibble {
          . " /*$comments->{bite}*/";
       PTDEBUG && _d('One nibble statement:', $nibble_sql);
 
+      # OceanBase returns its plan in JSON format, everything else uses the
+      # traditional format (versioned comment is for MySQL 9.7+).
+      my $explain_prefix = $NibbleIterator::IS_OCEANBASE
+         ? "EXPLAIN FORMAT=JSON SELECT "
+         : "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ SELECT ";
       my $explain_nibble_sql
-         = "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ SELECT "
+         = $explain_prefix
          . ($args->{select} ? $args->{select}
                           : join(', ', map{ $tbl->{tbl_struct}->{type_for}->{$_} eq 'enum'
                           ? "CAST(".$q->quote($_)." AS UNSIGNED)" : $q->quote($_) } @$cols))
@@ -292,8 +301,13 @@ sub _nibble_params {
          . " /*$comments->{nibble}*/";
       PTDEBUG && _d('Nibble statement:', $nibble_sql);
 
+      # OceanBase returns its plan in JSON format, everything else uses the
+      # traditional format (versioned comment is for MySQL 9.7+).
+      my $explain_prefix = $NibbleIterator::IS_OCEANBASE
+         ? "EXPLAIN FORMAT=JSON SELECT "
+         : "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ SELECT ";
       my $explain_nibble_sql
-         = "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ SELECT "
+         = $explain_prefix
          . ($args->{select} ? $args->{select}
                           : join(', ', map { $q->quote($_) } @{$asc->{cols}}))
          . " FROM $from"
@@ -316,8 +330,12 @@ sub _nibble_params {
          last_ub_sql          => $last_ub_sql,
          ub_sql               => $ub_sql,
          nibble_sql           => $nibble_sql,
-         explain_first_lb_sql => "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ $first_lb_sql",
-         explain_ub_sql       => "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ $ub_sql",
+         explain_first_lb_sql => ($NibbleIterator::IS_OCEANBASE
+            ? "EXPLAIN FORMAT=JSON $first_lb_sql"
+            : "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ $first_lb_sql"),
+         explain_ub_sql       => ($NibbleIterator::IS_OCEANBASE
+            ? "EXPLAIN FORMAT=JSON $ub_sql"
+            : "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ $ub_sql"),
          explain_nibble_sql   => $explain_nibble_sql,
          resume_lb_sql        => $resume_lb_sql,
          sql                  => {
@@ -694,6 +712,65 @@ sub _get_index_cardinality {
    return $cardinality;
 }
 
+# Parse the JSON EXPLAIN output returned by OceanBase and map it onto
+# the rows/key/key_len fields that the callers expect.
+sub _parse_oceanbase_explain {
+   my (%args) = @_;
+   my $dbh  = $args{dbh};
+   my $sql  = $args{sql};
+   my $sth  = $args{sth};
+   my $vals = $args{vals};
+   my $tbl  = $args{tbl};
+
+   my $json_text = '';
+   if ($sth) {
+      $sth->execute(@{$vals || []});
+      my $rows = $sth->fetchall_arrayref();
+      $sth->finish();
+      $json_text = join('', map { $_->[0] } @$rows);
+   }
+   else {
+      my $rows = $dbh->selectall_arrayref($sql);
+      $json_text = join('', map { $_->[0] } @$rows);
+   }
+
+   my $result = {
+      rows          => 0,
+      key           => undef,
+      key_len       => undef,
+      possible_keys => undef,
+   };
+
+   if ($json_text =~ /"EST\.ROWS"\s*:\s*(\d+)/) {
+      $result->{rows} = $1;
+   }
+
+   if ($json_text =~ /"NAME"\s*:\s*"([^"]+)"/) {
+      my $name = $1;
+      if ($name =~ /\(([^)]+)\)/) {
+         $result->{key} = $1;
+         $result->{possible_keys} = $1;
+      }
+      else {
+         $result->{key} = 'PRIMARY';
+         $result->{possible_keys} = 'PRIMARY';
+      }
+   }
+
+   if ( $result->{key} && $dbh && $tbl && $tbl->{tbl_struct} ) {
+      my $index_name = $result->{key};
+      if ( $tbl->{tbl_struct}->{keys}->{$index_name} ) {
+         my $n_cols = scalar @{$tbl->{tbl_struct}->{keys}->{$index_name}->{cols}};
+         $result->{key_len} = IndexLength::_calc_oceanbase_key_len(
+            $dbh, $tbl, $index_name, $n_cols);
+      }
+   }
+
+   PTDEBUG && _d('OceanBase EXPLAIN parsed: rows=', $result->{rows},
+                  ', key=', $result->{key}, ', key_len=', $result->{key_len});
+   return $result;
+}
+
 sub get_row_estimate {
    my (%args) = @_;
    my @required_args = qw(Cxn tbl);
@@ -701,6 +778,21 @@ sub get_row_estimate {
       die "I need a $arg argument" unless $args{$arg};
    }
    my ($cxn, $tbl) = @args{@required_args};
+
+   # OceanBase does not return the traditional EXPLAIN columns, it returns a
+   # JSON plan instead, which _parse_oceanbase_explain() understands.
+   if ( $IS_OCEANBASE ) {
+      my $sql = "EXPLAIN FORMAT=JSON SELECT * FROM $tbl->{name} "
+            . "WHERE " . ($args{where} || '1=1');
+      PTDEBUG && _d($sql);
+      my $expl = _parse_oceanbase_explain(
+         dbh => $cxn->dbh(), sql => $sql, tbl => $tbl);
+      my $idx = $expl->{key} || '';
+      if ( $idx ne 'PRIMARY' ) {
+         $idx = lc($idx);
+      }
+      return ($expl->{rows} || 0), $idx;
+   }
 
    my $sql = "EXPLAIN /*!90700 FORMAT=TRADITIONAL */ SELECT * FROM $tbl->{name} "
            . "WHERE " . ($args{where} || '1=1');

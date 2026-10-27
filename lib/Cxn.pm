@@ -160,9 +160,13 @@ sub set_dbh {
 
    # Update the cxn's name.  Until we connect, the DSN parts
    # h and P are used.  Once connected, use @@hostname.
-   my $sql = 'SELECT @@server_id /*!50038 , @@hostname*/, CONNECTION_ID() as connection_id';
-   PTDEBUG && _d($dbh, $sql);
-   my ($server_id, $hostname, $connection_id) = $dbh->selectrow_array($sql);
+   #
+   # OceanBase: @@server_id is served by the binlog service while
+   # CONNECTION_ID() runs in the observer, so ODP (obproxy) cannot return
+   # both in one statement.  They have to be fetched separately.
+   my $server_id     = $dbh->selectrow_array('SELECT @@server_id');
+   my $hostname      = $dbh->selectrow_array('SELECT @@hostname');
+   my $connection_id = $dbh->selectrow_array('SELECT CONNECTION_ID() AS connection_id');
    PTDEBUG && _d($dbh, 'hostname:', $hostname, $server_id);
 
    # If we already have a dbh, and that dbh is the same as this dbh,
